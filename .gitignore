@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Build / IDE
+dist/
+.vite/
+*.tsbuildinfo
+.idea/
+.vscode/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
