@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import TransitMapView from './TransitMapView'
 import type { LatLng, FocusTarget, StationLabelOverride, TransitMode, ModeLabelStyle, ModeMarkerStyle } from './types'
 import type { Station, Line } from './types'
@@ -31,6 +32,7 @@ import {
   NOMINATIM_REVERSE_MIN_INTERVAL_MS,
   type NominatimPlace,
 } from './transitGeocode'
+import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 import { IconUndo, IconRedo, IconPan, IconStation, IconLine, IconEditLine } from './transitUiIcons'
 import './App.css'
 
@@ -39,6 +41,35 @@ const DEFAULT_ZOOM = 12
 
 /** Treat map clicks within this distance of a stop as “on” that stop (transfer / reuse). */
 const STATION_CLICK_REUSE_RADIUS_M = 85
+
+/** Max viewport scroll / map pan per step so the tour does not jump the whole UI. */
+const DEMO_TOUR_MAX_SCROLL_STEP_PX = 130
+const DEMO_TOUR_MAX_ENSURE_PASSES = 3
+const DEMO_TOUR_SIDEBAR_CENTER_PASSES = 8
+const DEMO_TOUR_MAP_PAN_PASSES = 4
+/** Visual padding around the focused control for the dimming “hole”. */
+const DEMO_TOUR_FOCUS_VISUAL_PAD = 8
+
+const DEMO_TOUR_CURSOR_VB = 48
+const DEMO_TOUR_CURSOR_SVG_PX = 68
+const DEMO_TOUR_CURSOR_SCALE = 1.25
+const DEMO_TOUR_CURSOR_TIP_VB = { x: 10, y: 8 }
+
+function demoTourCursorTransform(x: number, y: number): string {
+  const tipX = (DEMO_TOUR_CURSOR_TIP_VB.x / DEMO_TOUR_CURSOR_VB) * DEMO_TOUR_CURSOR_SVG_PX * DEMO_TOUR_CURSOR_SCALE
+  const tipY = (DEMO_TOUR_CURSOR_TIP_VB.y / DEMO_TOUR_CURSOR_VB) * DEMO_TOUR_CURSOR_SVG_PX * DEMO_TOUR_CURSOR_SCALE
+  return `translate(${x - tipX}px, ${y - tipY}px) scale(${DEMO_TOUR_CURSOR_SCALE})`
+}
+
+function demoTourFocusRectFromEl(el: HTMLElement, pad: number) {
+  const r = el.getBoundingClientRect()
+  return {
+    x: Math.max(0, r.left - pad),
+    y: Math.max(0, r.top - pad),
+    width: Math.min(window.innerWidth, r.width + pad * 2),
+    height: Math.min(window.innerHeight, r.height + pad * 2),
+  }
+}
 
 function distanceMeters(a: LatLng, b: LatLng): number {
   const R = 6371000
@@ -1201,6 +1232,27 @@ export default function TransitApp() {
     ],
   )
 
+  /** Guided demo: extend route from last stop (same as drag-release on the end midpoint handle). */
+  const extendLineFromTerminusDemo = useCallback(
+    (lineId: string) => {
+      const line = lines.find((l) => l.id === lineId)
+      if (!line || line.stationIds.length < 2) return
+      const lastId = line.stationIds[line.stationIds.length - 1]
+      const last = stations.find((s) => s.id === lastId)
+      const prev = stations.find((s) => s.id === line.stationIds[line.stationIds.length - 2])
+      if (!last || !prev) return
+      const dx = last.position.lng - prev.position.lng
+      const dy = last.position.lat - prev.position.lat
+      const len = Math.sqrt(dx * dx + dy * dy) || 1
+      const off = 0.00014
+      addLineMidpointDrop(lineId, lastId, {
+        lat: last.position.lat + (off * dy) / len,
+        lng: last.position.lng + (off * dx) / len,
+      })
+    },
+    [lines, stations, addLineMidpointDrop],
+  )
+
   const selectedLine = selectedLineId ? lines.find((l) => l.id === selectedLineId) : null
 
   const lineCenter = useCallback(
@@ -1348,6 +1400,7 @@ export default function TransitApp() {
   const demoTourLineDashSelectRef = useRef<HTMLSelectElement>(null)
   const demoTourMetroMarkerScaleRef = useRef<HTMLInputElement>(null)
   const demoMapWrapRef = useRef<HTMLElement>(null)
+  const demoTourClearBelowCaptionRef = useRef<((el: HTMLElement) => void) | null>(null)
   const demoTourAutoStationNamesRef = useRef<HTMLInputElement>(null)
   const demoAutoAddToLineRef = useRef<HTMLInputElement>(null)
 
@@ -1400,12 +1453,16 @@ export default function TransitApp() {
     setEditModeGroupCollapsed: React.Dispatch<React.SetStateAction<Record<TransitMode, boolean>>>
     addMidpointWaypointForTour: (lineId: string) => void
     tourOffsetFirstSegmentWaypoint: (lineId: string) => void
+    /** Same outcome as dragging the extend handle past the last stop and releasing. */
+    extendLineFromTerminusDemo: (lineId: string) => void
     demoAddUnnamedStationForTour: (pos: LatLng) => string | null
     deleteStation: (stationId: string) => void
     setAutoAddNewStationsToSelectedLine: React.Dispatch<React.SetStateAction<boolean>>
+    expandEditLineCard: (lineId: string) => void
   }
 
   const demoTourCtxRef = useRef<DemoTourCtx>({} as DemoTourCtx)
+  const demoTourPrimaryLineIdRef = useRef<string | null>(null)
 
   const [demoTourActive, setDemoTourActive] = useState(false)
   const [demoTourCaption, setDemoTourCaption] = useState('')
@@ -1415,13 +1472,17 @@ export default function TransitApp() {
     y: 0,
     visible: false,
   })
-  const [demoTourSpotlightRect, setDemoTourSpotlightRect] = useState<{
+  const [demoTourHighlightRect, setDemoTourHighlightRect] = useState<{
     x: number
     y: number
     width: number
     height: number
   } | null>(null)
+  const [demoTourHighlightStrong, setDemoTourHighlightStrong] = useState(false)
   const [demoTourEndCardOpen, setDemoTourEndCardOpen] = useState(false)
+  const [demoTourFadeOut, setDemoTourFadeOut] = useState(false)
+  /** Line created in-tour (“Vancouver Demo Line”) — sidebar + demo queries target this card. */
+  const [demoTourPrimaryLineId, setDemoTourPrimaryLineId] = useState<string | null>(null)
   const demoTourAbortRef = useRef(false)
   const importLoadingRef = useRef(false)
 
@@ -1962,9 +2023,13 @@ export default function TransitApp() {
     setEditModeGroupCollapsed,
     addMidpointWaypointForTour,
     tourOffsetFirstSegmentWaypoint,
+    extendLineFromTerminusDemo,
     demoAddUnnamedStationForTour,
     deleteStation,
     setAutoAddNewStationsToSelectedLine,
+    expandEditLineCard: (lineId: string) => {
+      setEditViewCollapsedLineIds((prev) => prev.filter((id) => id !== lineId))
+    },
   }
 
   const runDemoTour = useCallback(async () => {
@@ -2006,13 +2071,160 @@ export default function TransitApp() {
       return nearest[0]?.id ?? null
     }
     const ensureElementInView = async (el: HTMLElement) => {
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-      await sleep(z(380))
+      const bottomPad = 16
+      const captionTop = demoTourCaptionTopPx()
+      const targetBottom = captionTop - bottomPad
+      const headerEl = document.querySelector('.appHeader')
+      const topSafe = (headerEl?.getBoundingClientRect().bottom ?? 52) + 8
+      const bandH = targetBottom - topSafe
+      const bandCenterY = (topSafe + targetBottom) / 2
+
+      if (el.closest('.leaflet-container')) {
+        await sleep(z(50))
+        for (let pass = 0; pass < DEMO_TOUR_MAP_PAN_PASSES; pass++) {
+          demoTourClearBelowCaptionRef.current?.(el)
+          await sleep(z(340))
+          const pr = padClientRectForDemo(el)
+          if (pr.bottom <= targetBottom && pr.top >= topSafe) break
+        }
+        await sleep(z(120))
+        return
+      }
+
+      const sidebar = el.closest('.sidebar') as HTMLElement | null
+      if (sidebar) {
+        for (let pass = 0; pass < DEMO_TOUR_SIDEBAR_CENTER_PASSES; pass++) {
+          const pr = padClientRectForDemo(el)
+          const inBand = pr.bottom <= targetBottom && pr.top >= topSafe
+          const elH = pr.bottom - pr.top
+          const elCenter = (pr.top + pr.bottom) / 2
+          let delta = 0
+          if (elH >= bandH - 6) {
+            delta = pr.top - topSafe - 8
+          } else {
+            delta = elCenter - bandCenterY
+          }
+          if (inBand && Math.abs(delta) < 14) break
+
+          let step = Math.max(
+            -DEMO_TOUR_MAX_SCROLL_STEP_PX,
+            Math.min(DEMO_TOUR_MAX_SCROLL_STEP_PX, delta),
+          )
+          if (step === 0) {
+            if (!inBand && pr.bottom > targetBottom) {
+              step = Math.min(pr.bottom - targetBottom, DEMO_TOUR_MAX_SCROLL_STEP_PX)
+            } else if (!inBand && pr.top < topSafe) {
+              step = -Math.min(topSafe - pr.top, DEMO_TOUR_MAX_SCROLL_STEP_PX)
+            } else if (inBand) {
+              break
+            }
+          }
+          if (step === 0) break
+
+          sidebar.scrollTop += step
+          await sleep(z(260))
+        }
+        await sleep(z(100))
+        return
+      }
+
+      for (let pass = 0; pass < DEMO_TOUR_MAX_ENSURE_PASSES; pass++) {
+        const pr = padClientRectForDemo(el)
+        const okBottom = pr.bottom <= targetBottom
+        const okTop = pr.top >= topSafe
+        if (okBottom && okTop) break
+
+        let delta = 0
+        if (!okBottom) delta = pr.bottom - targetBottom
+        else if (!okTop) delta = pr.top - topSafe
+
+        const capped =
+          delta === 0
+            ? 0
+            : delta > 0
+              ? Math.min(delta, DEMO_TOUR_MAX_SCROLL_STEP_PX)
+              : -Math.min(-delta, DEMO_TOUR_MAX_SCROLL_STEP_PX)
+        if (capped === 0) break
+
+        let scrolled = false
+        let node: HTMLElement | null = el
+        while (node && node !== document.documentElement) {
+          const st = getComputedStyle(node)
+          if (/(auto|scroll)/.test(st.overflowY) && node.scrollHeight > node.clientHeight + 1) {
+            node.scrollTop += capped
+            scrolled = true
+            break
+          }
+          node = node.parentElement
+        }
+        if (!scrolled) {
+          window.scrollBy({ top: capped, behavior: 'smooth' })
+        }
+        await sleep(z(320))
+      }
+    }
+    const waitForMidpointHandleEl = async () => {
+      for (let i = 0; i < 45; i++) {
+        if (demoTourAbortRef.current) return null
+        const el = document.querySelector(
+          '.leaflet-midpointHandlesPane [data-tour-midpoint-handle]',
+        ) as HTMLElement | null
+        if (el && el.getBoundingClientRect().width > 0) return el
+        await sleep(z(80))
+      }
+      return null
+    }
+    const waitForExtendEndHandleEl = async () => {
+      for (let i = 0; i < 45; i++) {
+        if (demoTourAbortRef.current) return null
+        const el = document.querySelector(
+          '.leaflet-midpointHandlesPane [data-tour-extend-end="1"]',
+        ) as HTMLElement | null
+        if (el && el.getBoundingClientRect().width > 0) return el
+        await sleep(z(80))
+      }
+      return null
+    }
+    const tapLeafletMidpointHandle = async (el: HTMLElement) => {
+      if (demoTourAbortRef.current) return
+      await ensureElementInView(el)
+      setDemoTourHighlightStrong(false)
+      setDemoTourHighlightRect(demoTourFocusRectFromEl(el, DEMO_TOUR_FOCUS_VISUAL_PAD))
+      const r = el.getBoundingClientRect()
+      const cx = r.left + r.width / 2
+      const cy = r.top + r.height / 2
+      setDemoTourCursor({ x: cx, y: cy, visible: true })
+      await pulseTarget(el, 'hover')
+      await sleep(z(180))
+      await pulseTarget(el, 'click')
+      const base = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window }
+      el.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          ...base,
+          pointerId: 1,
+          pointerType: 'mouse',
+          buttons: 1,
+          isPrimary: true,
+        }),
+      )
+      await sleep(z(100))
+      el.dispatchEvent(
+        new PointerEvent('pointerup', {
+          ...base,
+          pointerId: 1,
+          pointerType: 'mouse',
+          buttons: 0,
+          isPrimary: true,
+        }),
+      )
+      el.dispatchEvent(new MouseEvent('click', base))
+      await sleep(z(360))
+      setDemoTourHighlightRect(null)
     }
     const pulseTarget = async (el: HTMLElement, kind: 'hover' | 'click') => {
-      const cls = kind === 'hover' ? 'demoTourTargetHover' : 'demoTourTargetActive'
+      const cls = kind === 'hover' ? 'demoTourTargetHover' : 'demoTourTargetClick'
       el.classList.add(cls)
-      await sleep(z(kind === 'hover' ? 260 : 220))
+      await sleep(z(kind === 'hover' ? 260 : 300))
       el.classList.remove(cls)
     }
     const pulseMapStationLabel = async (stationId: string, kind: 'hover' | 'click' = 'hover') => {
@@ -2036,6 +2248,8 @@ export default function TransitApp() {
       if (demoTourAbortRef.current) return
       setCaption(caption, subtext ?? '')
       if (!el) {
+        setDemoTourHighlightRect(null)
+        setDemoTourHighlightStrong(false)
         setDemoTourCursor((prev) => ({
           ...prev,
           visible: false,
@@ -2044,6 +2258,8 @@ export default function TransitApp() {
         return
       }
       await ensureElementInView(el)
+      setDemoTourHighlightStrong(false)
+      setDemoTourHighlightRect(demoTourFocusRectFromEl(el, DEMO_TOUR_FOCUS_VISUAL_PAD))
       const r = el.getBoundingClientRect()
       setDemoTourCursor({
         x: r.left + r.width / 2,
@@ -2052,6 +2268,7 @@ export default function TransitApp() {
       })
       await pulseTarget(el, 'hover')
       await sleep(z(1100))
+      setDemoTourHighlightRect(null)
     }
     const spotlight = async (
       el: HTMLElement | null,
@@ -2063,23 +2280,22 @@ export default function TransitApp() {
       if (demoTourAbortRef.current || !el) return
       await ensureElementInView(el)
       setCaption(caption, subtext)
-      const r = el.getBoundingClientRect()
-      setDemoTourSpotlightRect({
-        x: Math.max(0, r.left - pad),
-        y: Math.max(0, r.top - pad),
-        width: Math.min(window.innerWidth, r.width + pad * 2),
-        height: Math.min(window.innerHeight, r.height + pad * 2),
-      })
+      setDemoTourHighlightStrong(true)
+      setDemoTourHighlightRect(demoTourFocusRectFromEl(el, pad))
       setDemoTourCursor((prev) => ({ ...prev, visible: false }))
       await sleep(z(durationMs))
-      setDemoTourSpotlightRect(null)
+      setDemoTourHighlightRect(null)
+      setDemoTourHighlightStrong(false)
     }
     const tap = async (el: HTMLElement | null) => {
       if (demoTourAbortRef.current || !el) return
       await ensureElementInView(el)
+      setDemoTourHighlightStrong(false)
+      setDemoTourHighlightRect(demoTourFocusRectFromEl(el, DEMO_TOUR_FOCUS_VISUAL_PAD))
       await pulseTarget(el, 'click')
       el.click()
       await sleep(z(520))
+      setDemoTourHighlightRect(null)
     }
     const flushReact = () =>
       new Promise<void>((r) => {
@@ -2092,6 +2308,8 @@ export default function TransitApp() {
     demoTourAbortRef.current = false
     setDemoTourEndCardOpen(false)
     setDemoTourActive(true)
+    setDemoTourPrimaryLineId(null)
+    demoTourPrimaryLineIdRef.current = null
     setCaption(
       'Trainbox guided demo for Vancouver - same workflow works for cities worldwide.',
       'The tour is automated. Follow the cursor to learn each workflow quickly.',
@@ -2103,6 +2321,15 @@ export default function TransitApp() {
       y: window.innerHeight / 2,
     }))
     const ctx = () => demoTourCtxRef.current
+
+    const prepareDemoLineSidebar = async () => {
+      const id = demoTourPrimaryLineIdRef.current
+      if (!id) return
+      ctx().setSelectedLineId(id)
+      ctx().expandEditLineCard(id)
+      await flushReact()
+      await sleep(z(220))
+    }
 
     try {
       await sleep(z(1200))
@@ -2249,8 +2476,11 @@ export default function TransitApp() {
       await tap(demoCreateLineRef.current)
       await flushReact()
       await sleep(z(480))
-
-      let tourStopId: string | null = null
+      const primaryLineId = selectedLineIdRef.current
+      demoTourPrimaryLineIdRef.current = primaryLineId
+      setDemoTourPrimaryLineId(primaryLineId)
+      await flushReact()
+      await sleep(z(80))
 
       const transferPos = demoTransferStationId
         ? stationsRef.current.find((s) => s.id === demoTransferStationId)?.position
@@ -2293,8 +2523,6 @@ export default function TransitApp() {
         )
         await pulseMapStationLabel(addedTourStopId, 'click')
       }
-      tourStopId = addedTourStopId
-
       await pointAt(
         demoToolLineRef.current,
         'Line mode — click stops in order; we append the new stop to your line.',
@@ -2368,19 +2596,43 @@ export default function TransitApp() {
       if (demoLineForCurve) {
         ctx().addMidpointWaypointForTour(demoLineForCurve)
         await flushReact()
-        await sleep(z(360))
-        await pointAt(
-          demoMapWrapRef.current,
-          'Midpoint handles let you fine-tune curves between stations.',
-          'Drag the midpoint dot to change only that segment geometry.',
-        )
+        await sleep(z(420))
+        const midEl = await waitForMidpointHandleEl()
+        if (midEl) {
+          await pointAt(
+            midEl,
+            'This blue dot is a midpoint handle — drag it to bend only this segment.',
+            'We click it first so you see where to grab; then we nudge it so the curve updates.',
+          )
+          await tapLeafletMidpointHandle(midEl)
+        } else {
+          await pointAt(
+            demoMapWrapRef.current,
+            'Midpoint handles let you fine-tune curves between stations.',
+            'Drag the midpoint dot to change only that segment geometry.',
+          )
+        }
         ctx().tourOffsetFirstSegmentWaypoint(demoLineForCurve)
         await sleep(z(780))
-        await pointAt(
-          demoMapWrapRef.current,
-          'To extend by drag: pull the last station outward, then continue adding stops.',
-          'This keeps line editing fluid when growing a route from a terminus.',
-        )
+        await flushReact()
+        await sleep(z(120))
+        const extendEndEl = await waitForExtendEndHandleEl()
+        if (extendEndEl) {
+          await pointAt(
+            extendEndEl,
+            'Extend by dragging the blue handle past the last stop — drop to add a new station along the line.',
+            'We run the same map release as that drag so you see the route grow.',
+          )
+        } else {
+          await pointAt(
+            demoMapWrapRef.current,
+            'Extend by dragging the blue handle past the last stop — drop to add a new station along the line.',
+            'We run the same map release as that drag so you see the route grow.',
+          )
+        }
+        ctx().extendLineFromTerminusDemo(demoLineForCurve)
+        await flushReact()
+        await sleep(z(720))
       }
 
       await pointAt(
@@ -2393,6 +2645,7 @@ export default function TransitApp() {
       await sleep(z(380))
 
       if (addedTourStopId) {
+        await prepareDemoLineSidebar()
         const delTourId = ctx().demoAddLooseStation(
           { lat: extendPos.lat + 0.0006, lng: extendPos.lng + 0.0046 },
           'Tour remove me',
@@ -2400,12 +2653,15 @@ export default function TransitApp() {
         ctx().appendStopToSelectedLineDemo(delTourId)
         await flushReact()
         await sleep(z(400))
+        const demoCard = document.querySelector('[data-tour-demo-line="1"]')
+        const deleteBtn = demoCard?.querySelector(
+          `[data-tour-station-id="${escapeAttrSelector(delTourId)}"]`,
+        )
+          ?.closest('li')
+          ?.querySelector('.stationDeleteBtn') as HTMLElement | null
         await pointAt(
-          document
-            .querySelector(`[data-tour-station-id="${escapeAttrSelector(delTourId)}"]`)
-            ?.closest('li')
-            ?.querySelector('.stationDeleteBtn') as HTMLElement | null,
-          'Delete removes the stop everywhere — use × on the line card.',
+          deleteBtn,
+          'Delete removes the stop everywhere — use × on the demo line’s card.',
         )
         ctx().deleteStation(delTourId)
         await sleep(z(520))
@@ -2422,10 +2678,22 @@ export default function TransitApp() {
         demoSidebarResizeRef.current,
         'Resize the sidebar — drag this edge when you want more room for line cards and station lists.',
       )
-      ctx().setSidebarWidth(428)
-      await sleep(z(520))
+      {
+        const aside = document.querySelector('.sidebar.sidebarResizable') as HTMLElement | null
+        const wStart = aside ? aside.getBoundingClientRect().width : 280
+        const wTarget = Math.min(520, Math.max(400, Math.round(wStart + 120)))
+        const steps = 10
+        for (let i = 1; i <= steps; i++) {
+          const t = Math.round(wStart + ((wTarget - wStart) * i) / steps)
+          ctx().setSidebarWidth(t)
+          await sleep(z(48))
+        }
+        ctx().setSidebarWidth(wTarget)
+      }
+      await sleep(z(380))
 
-      const demoLineId = selectedLineIdRef.current
+      await prepareDemoLineSidebar()
+      const demoLineId = demoTourPrimaryLineIdRef.current ?? selectedLineIdRef.current
       // Reframe before style explanations so route previews are not clipped by the current local zoom.
       if (demoLineId) {
         ctx().setFocusLocation({ type: 'line', lineId: demoLineId })
@@ -2437,7 +2705,7 @@ export default function TransitApp() {
       await sleep(z(420))
       await pointAt(
         demoTourLineNameInputRef.current,
-        'Line card — rename, colour, transit mode, stroke weight, and dash style for this route.',
+        'Vancouver Demo Line — rename, colour, transit mode, stroke weight, and dash style here.',
       )
       await sleep(z(560))
       if (demoLineId) {
@@ -2486,6 +2754,42 @@ export default function TransitApp() {
       )
       ctx().setShowStationNamesOnMap(true)
       await sleep(z(480))
+      if (addedTourStopId) {
+        await prepareDemoLineSidebar()
+        const labelStation = stationsRef.current.find((s) => s.id === addedTourStopId)
+        if (labelStation) {
+          ctx().setFocusLocation({ type: 'point', ...labelStation.position, zoom: 15 })
+          await flushReact()
+          await sleep(z(300))
+        }
+        ctx().setEditingStationId(addedTourStopId)
+        await flushReact()
+        await sleep(z(320))
+        await pointAt(
+          demoLabelPresetRef.current,
+          'Label placement for the selected stop — font defaults are above; position and rotation are here in Visuals.',
+          'We nudge the Yaletown-area stop you added on the demo line, then rename it.',
+        )
+        await tap(demoLabelPresetRef.current)
+        await sleep(z(360))
+        ctx().setStationLabelOverride(addedTourStopId, { offset: [28, 0], rotationDeg: 45 })
+        await flushReact()
+        setCaption(
+          'Label rotation shows on the map right away.',
+          'Use presets plus rotation to avoid overlaps while keeping names readable.',
+        )
+        await pulseMapStationLabel(addedTourStopId, 'click')
+        await sleep(z(420))
+        ctx().renameStation(addedTourStopId, 'Waterfront (demo)')
+        await flushReact()
+        await sleep(z(380))
+        ctx().setStationLabelOverride(addedTourStopId, { offset: [28, 0], rotationDeg: 0 })
+        await flushReact()
+        await sleep(z(360))
+        ctx().setEditingStationId(null)
+        await flushReact()
+        await sleep(z(240))
+      }
       await pointAt(
         demoBasemapRef.current,
         'Basemap — simplified tiles when checked, full street detail when off.',
@@ -2497,35 +2801,6 @@ export default function TransitApp() {
       ctx().setVisualsMenuOpen(false)
       await flushReact()
       await sleep(z(360))
-      if (addedTourStopId) {
-        const labelStation = stationsRef.current.find((s) => s.id === addedTourStopId)
-        if (labelStation) {
-          ctx().setFocusLocation({ type: 'point', ...labelStation.position, zoom: 15 })
-          await flushReact()
-          await sleep(z(300))
-        }
-        ctx().setEditingStationId(addedTourStopId)
-        await flushReact()
-        await sleep(z(260))
-        await pointAt(
-          demoLabelPresetRef.current,
-          'Now that labels are on, adjust label position and rotation.',
-          'We close Visuals first so you can see the map label update immediately.',
-        )
-        await tap(demoLabelPresetRef.current)
-        await sleep(z(360))
-        ctx().setStationLabelOverride(addedTourStopId, { offset: [28, 0], rotationDeg: 45 })
-        await flushReact()
-        setCaption(
-          'Label rotation is visible directly on the map.',
-          'Use presets plus rotation to avoid overlaps while keeping names readable.',
-        )
-        await pulseMapStationLabel(addedTourStopId, 'click')
-        await sleep(z(420))
-        ctx().setEditingStationId(null)
-        await flushReact()
-        await sleep(z(280))
-      }
 
       await pointAt(demoFunctionalBtnRef.current, 'Functional — auto-naming, validation, and show/hide by mode.')
       ctx().setFunctionalMenuOpen(true)
@@ -2546,20 +2821,6 @@ export default function TransitApp() {
       ctx().setFunctionalMenuOpen(false)
       await sleep(z(320))
 
-      if (tourStopId) {
-        setCaption('Another seeded stop - offset its label in the side panel.')
-        ctx().setEditingStationId(tourStopId)
-        await flushReact()
-        await sleep(z(420))
-        ctx().renameStation(tourStopId, 'Waterfront (demo)')
-        await sleep(z(420))
-        ctx().setStationLabelOverride(tourStopId, { offset: [28, 0], rotationDeg: 0 })
-        await sleep(z(520))
-        ctx().setEditingStationId(null)
-        await flushReact()
-        await sleep(z(240))
-      }
-
       await pointAt(demoUndoRef.current, 'Undo / Redo — step back through recent edits.')
       ctx().undo()
       await sleep(z(520))
@@ -2568,21 +2829,27 @@ export default function TransitApp() {
       await tap(demoSystemMapRef.current)
       await flushReact()
       await sleep(z(520))
-      await pointAt(
-        demoSystemNightRef.current,
-        'Night / high-contrast — easier in dark rooms or on projectors.',
-      )
-      ctx().setSystemMapNightTheme(true)
-      await sleep(z(780))
-      ctx().setSystemMapNightTheme(false)
-      await sleep(z(480))
       await pointAt(demoBackEditRef.current, 'Back to editing.')
       await tap(demoBackEditRef.current)
       await sleep(z(420))
 
+      if (demoTourAbortRef.current) return
+      setCaption(
+        'That covers the main workflows.',
+        'Undo any time, import a city from OpenStreetMap, or keep editing — take your time.',
+      )
+      await sleep(z(2800))
+      if (demoTourAbortRef.current) return
+      setDemoTourFadeOut(true)
+      await sleep(z(720))
       setDemoTourActive(false)
+      setDemoTourFadeOut(false)
       setDemoTourCursor((prev) => ({ ...prev, visible: false }))
-      setDemoTourSpotlightRect(null)
+      setDemoTourHighlightRect(null)
+      setDemoTourHighlightStrong(false)
+      setDemoTourCaption('')
+      setDemoTourSubtext('')
+      await sleep(z(200))
       setDemoTourEndCardOpen(true)
       return
     } catch (tourErr) {
@@ -2600,13 +2867,17 @@ export default function TransitApp() {
       try {
         if (appMountedRef.current) {
           setDemoTourActive(false)
+          setDemoTourFadeOut(false)
           setDemoTourCursor((prev) => ({ ...prev, visible: false }))
           setDemoTourCaption('')
           setDemoTourSubtext('')
-          setDemoTourSpotlightRect(null)
+          setDemoTourHighlightRect(null)
+          setDemoTourHighlightStrong(false)
           setMode('pan')
           setEditingStationId(null)
           setAddInfillAtMidpoint(false)
+          setDemoTourPrimaryLineId(null)
+          demoTourPrimaryLineIdRef.current = null
         }
       } catch {
         /* ignore teardown failures */
@@ -2626,6 +2897,7 @@ export default function TransitApp() {
     setEditModeGroupCollapsed,
     addMidpointWaypointForTour,
     tourOffsetFirstSegmentWaypoint,
+    extendLineFromTerminusDemo,
     demoAddUnnamedStationForTour,
     deleteStation,
   ])
@@ -2779,6 +3051,7 @@ export default function TransitApp() {
   }, [])
 
   return (
+    <>
     <div className="app">
       <header className="appHeader trainboxHeader">
         <h1 className="appTitle">Trainbox</h1>
@@ -3062,10 +3335,170 @@ export default function TransitApp() {
                   </div>
                 </div>
                 <div className="fileMenuDivider" />
+                <div className="fileMenuSubLabel">Map label defaults (all stations)</div>
+                {showStationNamesOnMap ? (
+                  <>
+                    <div className="newLineRow visualsPanelInlineRow">
+                      <label className="newLineLabel" htmlFor="labelFontFamily">
+                        Font
+                      </label>
+                      <select
+                        id="labelFontFamily"
+                        className="lineWeightSelect"
+                        value={stationLabelFontFamily}
+                        onChange={(e) => setStationLabelFontFamily(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <option value="Open Sans">Open Sans (default)</option>
+                        <option value="">Auto (map font)</option>
+                        <option value="system-ui">System UI</option>
+                        <option value="Arial, sans-serif">Arial</option>
+                        <option value="Helvetica, sans-serif">Helvetica</option>
+                        <option value="Georgia, serif">Georgia</option>
+                        <option value="'Courier New', monospace">Courier New</option>
+                        <option value="'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif">
+                          Inter / SF Pro
+                        </option>
+                        <option value="'Roboto', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+                          Roboto / Segoe UI
+                        </option>
+                        <option value="'PT Sans', system-ui, sans-serif">PT Sans</option>
+                        <option value="'Fira Sans', system-ui, sans-serif">Fira Sans</option>
+                      </select>
+                    </div>
+                    <div className="newLineRow visualsPanelInlineRow">
+                      <label className="newLineLabel" htmlFor="labelFontSize">
+                        Size
+                      </label>
+                      <input
+                        id="labelFontSize"
+                        type="number"
+                        className="lineWeightSelect"
+                        min={8}
+                        max={18}
+                        value={stationLabelFontSizePxOverride ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setStationLabelFontSizePxOverride(v === '' ? null : Number(v))
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <button
+                        type="button"
+                        className="labelResetBtn"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setStationLabelFontFamily('Open Sans')
+                          setStationLabelFontSizePxOverride(null)
+                        }}
+                      >
+                        Reset style
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="emptyHint" style={{ margin: '0 0 8px' }}>
+                    Turn on &quot;Show station names on map&quot; to edit default label font and size.
+                  </p>
+                )}
+                {showStationNamesOnMap &&
+                  editingStationId &&
+                  (() => {
+                    const station = stations.find((s) => s.id === editingStationId)
+                    if (!station) return null
+                    const override = stationLabelOverrides[editingStationId]
+                    const DIST = 28
+                    const d = Math.round(DIST * 0.7)
+                    const presets: { label: string; offset: [number, number] }[] = [
+                      { label: '→', offset: [DIST, 0] },
+                      { label: '↗', offset: [d, -d] },
+                      { label: '↑', offset: [0, -DIST] },
+                      { label: '↖', offset: [-d, -d] },
+                      { label: '←', offset: [-DIST, 0] },
+                      { label: '↙', offset: [-d, d] },
+                      { label: '↓', offset: [0, DIST] },
+                      { label: '↘', offset: [d, d] },
+                    ]
+                    const rotations = [0, 45, 90, 135, 180, 225, 270, 315]
+                    return (
+                      <div
+                        className="visualsSelectedStationLabelBlock"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="fileMenuSubLabel" style={{ marginTop: 10 }}>
+                          Selected stop: {station.name || 'Unnamed'}
+                        </div>
+                        <div className="labelPlacementControls">
+                          <div className="labelPlacementRow">
+                            <span className="labelPlacementLabel">Position</span>
+                            <div className="labelPlacementPresets">
+                              {presets.map((p) => (
+                                <button
+                                  ref={p.label === '→' ? demoLabelPresetRef : undefined}
+                                  key={p.label}
+                                  type="button"
+                                  className={`labelPresetBtn ${
+                                    override &&
+                                    override.offset[0] === p.offset[0] &&
+                                    override.offset[1] === p.offset[1]
+                                      ? 'labelPresetBtnActive'
+                                      : ''
+                                  }`}
+                                  onClick={() =>
+                                    setStationLabelOverride(editingStationId, {
+                                      offset: p.offset,
+                                      rotationDeg: override?.rotationDeg ?? 0,
+                                    })
+                                  }
+                                  title={p.label}
+                                >
+                                  {p.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="labelPlacementRow">
+                            <span className="labelPlacementLabel">Rotation</span>
+                            <select
+                              className="labelRotationSelect"
+                              value={override?.rotationDeg ?? 0}
+                              onChange={(e) => {
+                                const rot = Number(e.target.value)
+                                setStationLabelOverride(editingStationId, {
+                                  offset: override?.offset ?? [DIST, 0],
+                                  rotationDeg: rot,
+                                })
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {rotations.map((r) => (
+                                <option key={r} value={r}>
+                                  {r}°
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <button
+                            type="button"
+                            className="labelResetBtn"
+                            onClick={() => setStationLabelOverride(editingStationId, null)}
+                          >
+                            Reset to auto
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                {showStationNamesOnMap && !editingStationId && (
+                  <p className="emptyHint" style={{ margin: '8px 0 0', fontSize: 12 }}>
+                    Select a stop on a line card (Rename or Label) to adjust that stop’s placement here.
+                  </p>
+                )}
+                <div className="fileMenuDivider" />
                 <div className="fileMenuSubLabel">Labels &amp; markers by mode</div>
                 {!showStationNamesOnMap && (
                   <p className="emptyHint" style={{ margin: '0 0 8px' }}>
-                    Turn on "Show station names on map" to edit label font and size.
+                    Turn on &quot;Show station names on map&quot; to edit per-mode label font and size.
                   </p>
                 )}
                 <div className="modeVisualsColumns">
@@ -3600,6 +4033,7 @@ export default function TransitApp() {
                 lines={lines}
                 selectedLineId={null}
                 demoTourActive={demoTourActive}
+                demoTourClearBelowCaptionRef={demoTourClearBelowCaptionRef}
                 focusTarget={focusLocation}
                 onFocusComplete={() => setFocusLocation(null)}
                 systemMapSelectedLineId={systemMapSelectedLineId}
@@ -3779,165 +4213,6 @@ export default function TransitApp() {
                 </section>
               )}
 
-              {showStationNamesOnMap && (
-                <section className="sidebarSection">
-                  <h2 className="sidebarSectionTitle">Label style (all stations)</h2>
-                  <div className="newLineRow">
-                    <label
-                      className="newLineLabel"
-                      htmlFor="labelFontFamily"
-                    >
-                      Font
-                    </label>
-                    <select
-                      id="labelFontFamily"
-                      className="lineWeightSelect"
-                      value={stationLabelFontFamily}
-                      onChange={(e) => setStationLabelFontFamily(e.target.value)}
-                    >
-                      <option value="Open Sans">Open Sans (default)</option>
-                      <option value="">Auto (map font)</option>
-                      <option value="system-ui">System UI</option>
-                      <option value="Arial, sans-serif">Arial</option>
-                      <option value="Helvetica, sans-serif">Helvetica</option>
-                      <option value="Georgia, serif">Georgia</option>
-                      <option value="'Courier New', monospace">
-                        Courier New
-                      </option>
-                      <option value="'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif">
-                        Inter / SF Pro
-                      </option>
-                      <option value="'Roboto', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
-                        Roboto / Segoe UI
-                      </option>
-                      <option value="'PT Sans', system-ui, sans-serif">
-                        PT Sans
-                      </option>
-                      <option value="'Fira Sans', system-ui, sans-serif">
-                        Fira Sans
-                      </option>
-                    </select>
-                  </div>
-                  <div className="newLineRow">
-                    <label className="newLineLabel" htmlFor="labelFontSize">
-                      Size
-                    </label>
-                    <input
-                      id="labelFontSize"
-                      type="number"
-                      className="lineWeightSelect"
-                      min={8}
-                      max={18}
-                      value={stationLabelFontSizePxOverride ?? ''}
-                      onChange={(e) => {
-                        const v = e.target.value
-                        setStationLabelFontSizePxOverride(
-                          v === '' ? null : Number(v),
-                        )
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="labelResetBtn"
-                      onClick={() => {
-                        setStationLabelFontFamily('Open Sans')
-                        setStationLabelFontSizePxOverride(null)
-                      }}
-                    >
-                      Reset style
-                    </button>
-                  </div>
-                </section>
-              )}
-
-              {showStationNamesOnMap && editingStationId && (() => {
-                const station = stations.find((s) => s.id === editingStationId)
-                if (!station) return null
-                const override = stationLabelOverrides[editingStationId]
-                const DIST = 28
-                const d = Math.round(DIST * 0.7)
-                const presets: {
-                  label: string
-                  offset: [number, number]
-                }[] = [
-                  { label: '→', offset: [DIST, 0] },
-                  { label: '↗', offset: [d, -d] },
-                  { label: '↑', offset: [0, -DIST] },
-                  { label: '↖', offset: [-d, -d] },
-                  { label: '←', offset: [-DIST, 0] },
-                  { label: '↙', offset: [-d, d] },
-                  { label: '↓', offset: [0, DIST] },
-                  { label: '↘', offset: [d, d] },
-                ]
-                const rotations = [0, 45, 90, 135, 180, 225, 270, 315]
-                return (
-                  <section className="sidebarSection labelPlacementSection">
-                    <h2 className="sidebarSectionTitle">
-                      Label: {station.name || 'Unnamed'}
-                    </h2>
-                    <div className="labelPlacementControls">
-                      <div className="labelPlacementRow">
-                        <span className="labelPlacementLabel">Position</span>
-                        <div className="labelPlacementPresets">
-                          {presets.map((p) => (
-                            <button
-                              ref={p.label === '→' ? demoLabelPresetRef : undefined}
-                              key={p.label}
-                              type="button"
-                              className={`labelPresetBtn ${
-                                override &&
-                                override.offset[0] === p.offset[0] &&
-                                override.offset[1] === p.offset[1]
-                                  ? 'labelPresetBtnActive'
-                                  : ''
-                              }`}
-                              onClick={() =>
-                                setStationLabelOverride(editingStationId, {
-                                  offset: p.offset,
-                                  rotationDeg: override?.rotationDeg ?? 0,
-                                })
-                              }
-                              title={p.label}
-                            >
-                              {p.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="labelPlacementRow">
-                        <span className="labelPlacementLabel">Rotation</span>
-                        <select
-                          className="labelRotationSelect"
-                          value={override?.rotationDeg ?? 0}
-                          onChange={(e) => {
-                            const rot = Number(e.target.value)
-                            setStationLabelOverride(editingStationId, {
-                              offset: override?.offset ?? [DIST, 0],
-                              rotationDeg: rot,
-                            })
-                          }}
-                        >
-                          {rotations.map((r) => (
-                            <option key={r} value={r}>
-                              {r}°
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <button
-                        type="button"
-                        className="labelResetBtn"
-                        onClick={() =>
-                          setStationLabelOverride(editingStationId, null)
-                        }
-                      >
-                        Reset to auto
-                      </button>
-                    </div>
-                  </section>
-                )
-              })()}
-
               <section className="sidebarSection">
                 <h2 className="sidebarSectionTitle">New line</h2>
                 <div className="newLineCard">
@@ -4077,6 +4352,9 @@ export default function TransitApp() {
                       return (
                         <li
                           key={line.id}
+                          data-tour-demo-line={
+                            demoTourActive && demoTourPrimaryLineId === line.id ? '1' : undefined
+                          }
                           className={`lineCard ${
                             selectedLineId === line.id
                               ? 'lineCardSelected'
@@ -4570,6 +4848,7 @@ export default function TransitApp() {
                 lines={lines}
                 selectedLineId={selectedLineId}
                 demoTourActive={demoTourActive}
+                demoTourClearBelowCaptionRef={demoTourClearBelowCaptionRef}
                 focusTarget={focusLocation}
                 onFocusComplete={() => setFocusLocation(null)}
                 onAddStation={addStation}
@@ -4686,67 +4965,86 @@ export default function TransitApp() {
         </div>
       )}
 
-      {demoTourActive && (
-        <div
-          className={`demoTourLayer${systemMapView ? ' demoTourLayer--systemMap' : ''}`}
-          aria-live="polite"
-        >
-          <div className={`demoTourBackdrop${demoTourSpotlightRect ? ' demoTourBackdropSpotlight' : ''}`} aria-hidden />
-          {demoTourSpotlightRect && (
+    </div>
+    {createPortal(
+      <>
+        {demoTourActive && (
+          <div
+            className={`demoTourLayer${systemMapView ? ' demoTourLayer--systemMap' : ''}${
+              demoTourFadeOut ? ' demoTourLayer--fadeOut' : ''
+            }`}
+            aria-live="polite"
+          >
             <div
-              className="demoTourSpotlightBox"
-              style={{
-                left: demoTourSpotlightRect.x,
-                top: demoTourSpotlightRect.y,
-                width: demoTourSpotlightRect.width,
-                height: demoTourSpotlightRect.height,
-              }}
+              className={`demoTourBackdrop${demoTourHighlightRect ? ' demoTourBackdrop--dimOnly' : ''}`}
               aria-hidden
             />
-          )}
-          <div
-            className="demoTourCursor"
-            style={{
-              transform: `translate(${demoTourCursor.x}px, ${demoTourCursor.y}px) scale(1.4)`,
-              opacity: demoTourCursor.visible && !demoTourSpotlightRect ? 1 : 0,
-            }}
-            aria-hidden
-          >
-            <svg className="demoTourCursorSvg" viewBox="0 0 48 48" width="80" height="80">
-              <path
-                d="M10 8 L38 32 L26 34 L20 44 Z"
-                fill="var(--accent, #0d9488)"
-                stroke="#fff"
-                strokeWidth="2.5"
-                strokeLinejoin="round"
+            {demoTourHighlightRect && (
+              <div
+                className={`demoTourFocusHole${demoTourHighlightStrong ? ' demoTourFocusHole--strong' : ''}`}
+                style={{
+                  left: demoTourHighlightRect.x,
+                  top: demoTourHighlightRect.y,
+                  width: demoTourHighlightRect.width,
+                  height: demoTourHighlightRect.height,
+                }}
+                aria-hidden
               />
-            </svg>
-          </div>
-          <div className="demoTourCaptionWrap">
-            <p className="demoTourCaptionText">{demoTourCaption}</p>
-            {demoTourSubtext && <p className="demoTourStepSubtext">{demoTourSubtext}</p>}
-            <p className="demoTourHint">Press Esc to end the tour.</p>
-          </div>
-        </div>
-      )}
-
-      {demoTourEndCardOpen && (
-        <div className="demoTourEndCardLayer" aria-live="polite">
-          <div className="demoTourEndCardPanel" role="dialog" aria-label="Demo complete">
-            <p className="demoTourEndCardBrand">trainbox</p>
-            <button
-              type="button"
-              className="toolBtn"
-              onClick={() => {
-                setDemoTourEndCardOpen(false)
+            )}
+            <div
+              className="demoTourCursor"
+              style={{
+                transform: demoTourCursorTransform(demoTourCursor.x, demoTourCursor.y),
+                opacity: demoTourCursor.visible && !demoTourHighlightStrong ? 1 : 0,
               }}
+              aria-hidden
             >
-              Exit demo
-            </button>
+              <svg
+                className="demoTourCursorSvg"
+                viewBox="0 0 48 48"
+                width={DEMO_TOUR_CURSOR_SVG_PX}
+                height={DEMO_TOUR_CURSOR_SVG_PX}
+              >
+                <path
+                  d="M10 8 L38 32 L26 34 L20 44 Z"
+                  fill="var(--accent, #0d9488)"
+                  stroke="#fff"
+                  strokeWidth="2.5"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <div className="demoTourCaptionWrap">
+              <div className="demoTourCaptionInner">
+                <p className="demoTourCaptionText">{demoTourCaption}</p>
+                {demoTourSubtext && <p className="demoTourStepSubtext">{demoTourSubtext}</p>}
+                <p className="demoTourHint">Press Esc to end the tour.</p>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+
+        {demoTourEndCardOpen && (
+          <div className="demoTourEndCardLayer" aria-live="polite">
+            <div className="demoTourEndCardPanel" role="dialog" aria-label="Demo complete">
+              <p className="demoTourEndCardBrand">trainbox</p>
+              <p className="demoTourEndCardTagline">Guided tour complete</p>
+              <button
+                type="button"
+                className="toolBtn demoTourEndCardBtn"
+                onClick={() => {
+                  setDemoTourEndCardOpen(false)
+                }}
+              >
+                Exit demo
+              </button>
+            </div>
+          </div>
+        )}
+      </>,
+      document.body,
+    )}
+    </>
   )
 }
 

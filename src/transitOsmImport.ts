@@ -7,10 +7,18 @@ import { getLineMode } from './types'
 
 export const SAVE_VERSION = 4
 
-const OVERPASS_ENDPOINTS = [
+const OVERPASS_ENDPOINTS_PUBLIC = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ]
+
+/** Same-origin in Vite dev (proxied) avoids CORS / flaky browser cross-origin POST. */
+function overpassEndpoints(): string[] {
+  if (import.meta.env.DEV) {
+    return ['/overpass/api/interpreter', ...OVERPASS_ENDPOINTS_PUBLIC]
+  }
+  return [...OVERPASS_ENDPOINTS_PUBLIC]
+}
 
 export type ImportModeFlags = {
   metro: boolean
@@ -269,7 +277,7 @@ type OverpassElement = {
 
 async function fetchOverpass(query: string, signal?: AbortSignal): Promise<{ elements?: OverpassElement[] }> {
   let lastErr: Error | null = null
-  for (const base of OVERPASS_ENDPOINTS) {
+  for (const base of overpassEndpoints()) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const ctrl = new AbortController()
       const t = setTimeout(() => ctrl.abort(), 110000)

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, MutableRefObject } from 'react'
 import {
   MapContainer,
   TileLayer,
@@ -23,6 +23,7 @@ import {
   defaultModeVisibility,
 } from './types'
 import { smoothCurveThroughPoints } from './utils/curve'
+import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 
 const CARTODB_TILES = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
 const CARTODB_SIMPLIFIED_TILES = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
@@ -938,11 +939,23 @@ export function TransitLayer({
     map,
   ])
 
-  const lineDotIcon = useMemo(
+  const lineMidpointIconNormal = useMemo(
     () =>
       L.divIcon({
         className: 'line-midpoint-dot',
-        html: '<div style="width:14px;height:14px;border-radius:50%;background:#2563eb;border:2px solid #ffffff;box-sizing:border-box;"></div>',
+        html:
+          '<div data-tour-midpoint-handle="1" class="lineMidpointDotInner" style="width:14px;height:14px;border-radius:50%;background:#2563eb;border:2px solid #ffffff;box-sizing:border-box;"></div>',
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      }),
+    [],
+  )
+  const lineMidpointIconExtendEnd = useMemo(
+    () =>
+      L.divIcon({
+        className: 'line-midpoint-dot',
+        html:
+          '<div data-tour-midpoint-handle="1" data-tour-extend-end="1" class="lineMidpointDotInner" style="width:14px;height:14px;border-radius:50%;background:#2563eb;border:2px solid #ffffff;box-sizing:border-box;"></div>',
         iconSize: [14, 14],
         iconAnchor: [7, 7],
       }),
@@ -1088,11 +1101,14 @@ export function TransitLayer({
         selectedLineId &&
         selectedLine &&
         onLineMidpointDrop &&
-        selectedLineMidpoints.map((mp) => (
+        selectedLineMidpoints.map((mp) => {
+          const lastSid = selectedLine.stationIds[selectedLine.stationIds.length - 1]
+          const isExtendEnd = mp.afterStationId === lastSid && !mp.fromStart
+          return (
           <Marker
             key={`mid-${selectedLine.id}-${mp.segmentIndex}`}
             position={[mp.position.lat, mp.position.lng]}
-            icon={lineDotIcon}
+            icon={isExtendEnd ? lineMidpointIconExtendEnd : lineMidpointIconNormal}
             pane="midpointHandlesPane"
             zIndexOffset={100}
             draggable
@@ -1107,7 +1123,8 @@ export function TransitLayer({
               <span style={{ fontSize: 12 }}>Drag to curve the line or drop on a station to snap</span>
             </Popup>
           </Marker>
-        ))}
+          )
+        })}
       {stations
         .map((station, stationIndex) => ({ station, stationIndex }))
         .filter(({ station }) => {
@@ -1435,6 +1452,7 @@ interface TransitMapViewProps {
   lines: Line[]
   selectedLineId: string | null
   demoTourActive?: boolean
+  demoTourClearBelowCaptionRef?: MutableRefObject<((el: HTMLElement) => void) | null>
   focusTarget: FocusTarget | null
   onFocusComplete: () => void
   onAddStation: (pos: LatLng) => void
@@ -1581,6 +1599,92 @@ function FlyToController({
   return null
 }
 
+/** Pan map so a DOM target sits above the demo caption — small steps to avoid huge jumps. */
+function DemoTourClearCaptionPan({
+  registerRef,
+}: {
+  registerRef?: MutableRefObject<((el: HTMLElement) => void) | null>
+}) {
+  const map = useMap()
+  useEffect(() => {
+    if (!registerRef) return
+    const bottomPad = 16
+    const maxStep = 130
+    registerRef.current = (el: HTMLElement) => {
+      const captionTop = demoTourCaptionTopPx()
+      const targetBottom = captionTop - bottomPad
+      const headerEl = document.querySelector('.appHeader')
+      const topSafe = (headerEl?.getBoundingClientRect().bottom ?? 52) + 8
+      const pr = padClientRectForDemo(el)
+      let dy = 0
+      if (pr.bottom > targetBottom) {
+        dy += Math.min(Math.ceil(pr.bottom - targetBottom), maxStep)
+      }
+      if (pr.top < topSafe) {
+        dy -= Math.min(Math.ceil(topSafe - pr.top), maxStep)
+      }
+      if (dy === 0) return
+      map.panBy(L.point(0, dy), { animate: true, duration: 0.28, easeLinearity: 0.22 })
+    }
+    return () => {
+      registerRef.current = null
+    }
+  }, [map, registerRef])
+  return null
+}
+
+/** Demo tour / flex layouts can leave the map thinking it is shorter than the pane; vectors then clip at the bottom. */
+function MapInvalidateOnDemoAndResize({ demoTourActive }: { demoTourActive: boolean }) {
+  const map = useMap()
+  useEffect(() => {
+    const fix = () => {
+      map.invalidateSize({ animate: false })
+      map.eachLayer((layer) => {
+        if (layer instanceof L.Path) {
+          layer.redraw()
+        }
+      })
+    }
+    fix()
+    const a = requestAnimationFrame(fix)
+    const t1 = window.setTimeout(fix, 120)
+    const t2 = window.setTimeout(fix, 450)
+    return () => {
+      cancelAnimationFrame(a)
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+    }
+  }, [demoTourActive, map])
+
+  useEffect(() => {
+    const el = map.getContainer()
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastW = -1
+    let lastH = -1
+    let debounce: ReturnType<typeof setTimeout> | null = null
+    const run = () => {
+      const r = el.getBoundingClientRect()
+      if (Math.abs(r.width - lastW) < 0.5 && Math.abs(r.height - lastH) < 0.5) return
+      lastW = r.width
+      lastH = r.height
+      requestAnimationFrame(() => {
+        map.invalidateSize({ animate: false })
+      })
+    }
+    const ro = new ResizeObserver(() => {
+      if (debounce) clearTimeout(debounce)
+      debounce = setTimeout(run, 120)
+    })
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      if (debounce) clearTimeout(debounce)
+    }
+  }, [map])
+
+  return null
+}
+
 export default function TransitMapView({
   center,
   zoom,
@@ -1589,6 +1693,7 @@ export default function TransitMapView({
   lines,
   selectedLineId,
   demoTourActive = false,
+  demoTourClearBelowCaptionRef,
   focusTarget,
   onFocusComplete,
   onAddStation,
@@ -1634,6 +1739,8 @@ export default function TransitMapView({
         lines={lines}
         stations={stations}
       />
+      <DemoTourClearCaptionPan registerRef={demoTourClearBelowCaptionRef} />
+      <MapInvalidateOnDemoAndResize demoTourActive={demoTourActive} />
       <MapClickHandler
         mode={mode}
         onAddStation={onAddStation}

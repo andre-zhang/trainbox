@@ -1,34 +1,52 @@
-/* Guided demo tour (big pointer + captions) */
+/* Guided demo tour (big pointer + captions) — portaled to document.body for full-viewport coverage */
 .demoTourLayer {
   position: fixed;
   inset: 0;
   z-index: 12000;
   pointer-events: none;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  transition: opacity 0.7s ease;
+  opacity: 1;
+}
+
+.demoTourLayer--fadeOut {
+  opacity: 0;
 }
 
 .demoTourBackdrop {
   position: absolute;
   inset: 0;
-  background: rgba(15, 23, 42, 0.18);
+  /* Light wash when no target “hole” (e.g. caption-only steps). */
+  background: rgba(15, 23, 42, 0.12);
   pointer-events: none;
 }
 
-.demoTourBackdropSpotlight {
-  background: rgba(2, 6, 23, 0.48);
+/* When a focus hole is shown, its box-shadow does the dimming — skip full-screen tint to avoid double-darkening. */
+.demoTourBackdrop--dimOnly {
+  background: transparent;
 }
 
-.demoTourSpotlightBox {
+.demoTourFocusHole {
   position: absolute;
-  border: 2px solid rgba(255, 255, 255, 0.95);
+  box-sizing: border-box;
+  border: 2px solid rgba(255, 255, 255, 0.88);
   border-radius: 10px;
-  box-shadow:
-    0 0 0 9999px rgba(2, 6, 23, 0.32),
-    0 10px 32px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.5);
   pointer-events: none;
-  animation: demoTourSpotlightPulse 0.95s ease-in-out infinite alternate;
 }
 
-@keyframes demoTourSpotlightPulse {
+.demoTourFocusHole--strong {
+  border-color: rgba(255, 255, 255, 0.95);
+  box-shadow:
+    0 0 0 9999px rgba(2, 6, 23, 0.62),
+    0 10px 32px rgba(0, 0, 0, 0.35);
+  animation: demoTourFocusHolePulse 0.95s ease-in-out infinite alternate;
+}
+
+@keyframes demoTourFocusHolePulse {
   from {
     transform: scale(1);
   }
@@ -41,8 +59,6 @@
   position: absolute;
   left: 0;
   top: 0;
-  margin-left: -12px;
-  margin-top: -10px;
   will-change: transform, opacity;
   transition:
     transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
@@ -57,15 +73,26 @@
 
 .demoTourCaptionWrap {
   position: absolute;
-  left: 50%;
-  bottom: 24px;
-  transform: translateX(-50%);
-  max-width: min(820px, 94vw);
-  padding: 18px 26px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  padding: 0 max(12px, env(safe-area-inset-left, 0px)) max(0px, env(safe-area-inset-bottom, 0px))
+    max(12px, env(safe-area-inset-right, 0px));
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.demoTourCaptionInner {
+  max-width: min(900px, 100%);
+  margin: 0 auto;
+  padding: 16px 22px 18px;
+  padding-bottom: max(18px, calc(10px + env(safe-area-inset-bottom, 0px)));
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.2);
+  border-bottom: none;
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -10px 44px rgba(15, 23, 42, 0.14);
   pointer-events: none;
 }
 
@@ -104,6 +131,14 @@
   transition: filter 0.12s ease, outline-color 0.12s ease;
 }
 
+.demoTourTargetClick {
+  outline: 3px solid rgba(22, 163, 74, 0.95);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+  filter: saturate(1.12) brightness(1.05);
+  transition: filter 0.14s ease, outline-color 0.14s ease, box-shadow 0.14s ease;
+}
+
 .demoTourEndCardLayer {
   position: fixed;
   inset: 0;
@@ -111,13 +146,38 @@
   background: #fff;
   display: grid;
   place-items: center;
+  padding: max(24px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px))
+    max(24px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+  animation: demoTourEndCardBackdropIn 0.55s ease forwards;
+}
+
+@keyframes demoTourEndCardBackdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .demoTourEndCardPanel {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  animation: demoTourEndCardPanelIn 0.65s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
+}
+
+@keyframes demoTourEndCardPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .demoTourEndCardBrand {
@@ -126,6 +186,19 @@
   font-weight: 700;
   color: #111827;
   letter-spacing: 0.02em;
+}
+
+.demoTourEndCardTagline {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: #64748b;
+  letter-spacing: 0.01em;
+}
+
+.demoTourEndCardBtn {
+  margin-top: 8px;
+  min-width: 9rem;
 }
 
 .demoTourStopBar {
@@ -250,6 +323,24 @@
   overflow-x: hidden;
   box-sizing: border-box;
   min-height: 160px;
+}
+
+.visualsPanelBody .visualsPanelInlineRow {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.visualsPanelBody .visualsSelectedStationLabelBlock {
+  padding-left: 8px;
+  padding-right: 8px;
+  margin-bottom: 4px;
+}
+
+/* Match .visualsPanelInlineRow / mode column inset so hints don’t hug the panel edge */
+.visualsPanelBody .emptyHint {
+  padding-left: 8px;
+  padding-right: 8px;
+  box-sizing: border-box;
 }
 
 /* Right edge: width only */
@@ -3144,6 +3235,22 @@ details > summary::-webkit-details-marker {
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+
+/* Custom vector panes must cover the full map — otherwise polylines can fail to draw in the lower area (common with flex + tour overlay reflow). */
+.leaflet-container .leaflet-linesPane,
+.leaflet-container .leaflet-stationsPane,
+.leaflet-container .leaflet-midpointHandlesPane,
+.leaflet-container .leaflet-editStationsPane,
+.leaflet-container .leaflet-handlesPane {
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.leaflet-container .leaflet-overlay-pane svg,
+.leaflet-container .leaflet-linesPane svg {
+  overflow: visible !important;
 }
 
 /* Station name labels on map (Leaflet tooltip) */
