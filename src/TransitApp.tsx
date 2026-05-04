@@ -33,6 +33,7 @@ import {
   type NominatimPlace,
 } from './transitGeocode'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
+import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import { IconUndo, IconRedo, IconPan, IconStation, IconLine, IconEditLine } from './transitUiIcons'
 import './App.css'
 
@@ -276,13 +277,6 @@ function loadModeVisuals(): {
   }
 }
 
-interface SavedMap {
-  version: number
-  stations: Station[]
-  lines: Line[]
-  stationLabelOverrides?: Record<string, StationLabelOverride>
-}
-
 type HistorySnapshot = { stations: Station[]; lines: Line[]; stationLabelOverrides: Record<string, StationLabelOverride> }
 
 function syncIdCountersFromData(stations: Station[], lines: Line[]) {
@@ -298,86 +292,30 @@ function syncIdCountersFromData(stations: Station[], lines: Line[]) {
   lineIdCounter = Math.max(0, ...lineNums)
 }
 
-function isValidSavedMap(data: unknown): data is SavedMap {
-  if (!data || typeof data !== 'object') return false
-  const d = data as SavedMap
-  if (typeof d.version !== 'number' || d.version < 1) return false
-  if (!Array.isArray(d.stations) || !Array.isArray(d.lines)) return false
-  const station = (s: unknown) =>
-    s != null &&
-    typeof s === 'object' &&
-    typeof (s as Station).id === 'string' &&
-    typeof (s as Station).name === 'string' &&
-    typeof (s as Station).position === 'object' &&
-    typeof (s as Station).position?.lat === 'number' &&
-    typeof (s as Station).position?.lng === 'number'
-  const line = (l: unknown) =>
-    l != null &&
-    typeof l === 'object' &&
-    typeof (l as Line).id === 'string' &&
-    typeof (l as Line).name === 'string' &&
-    typeof (l as Line).color === 'string' &&
-    Array.isArray((l as Line).stationIds)
-  if (d.version >= 2 && d.stationLabelOverrides != null) {
-    if (typeof d.stationLabelOverrides !== 'object') return false
-    for (const [k, v] of Object.entries(d.stationLabelOverrides)) {
-      if (typeof k !== 'string' || !v || typeof v !== 'object') return false
-      const o = v as { offset?: unknown; rotationDeg?: unknown }
-      if (!Array.isArray(o.offset) || o.offset.length !== 2 || typeof o.rotationDeg !== 'number') return false
-    }
-  }
-  return (d.stations as unknown[]).every(station) && (d.lines as unknown[]).every(line)
+export type TransitAppProps = {
+  /** When set, map is persisted to Neon via `/api/map/:id` and autosaved. */
+  cloudMapId?: string | null
+  /** If provided, initial map state (e.g. loaded from cloud or JSON import). */
+  initialSavedMap?: SavedMap | null
+  onNavigateHome?: () => void
 }
 
-function tryRecoverSavedMap(data: unknown): SavedMap | null {
-  if (!data || typeof data !== 'object') return null
-  const d = data as Record<string, unknown>
-  const version = typeof d.version === 'number' ? d.version : 1
-  if (version < 1) return null
-  const stations: Station[] = []
-  if (Array.isArray(d.stations)) {
-    for (const s of d.stations as unknown[]) {
-      if (
-        s != null &&
-        typeof s === 'object' &&
-        typeof (s as Station).id === 'string' &&
-        typeof (s as Station).name === 'string' &&
-        typeof (s as Station).position === 'object' &&
-        typeof (s as Station).position?.lat === 'number' &&
-        typeof (s as Station).position?.lng === 'number'
-      )
-        stations.push(s as Station)
+export default function TransitApp({
+  cloudMapId = null,
+  initialSavedMap = null,
+  onNavigateHome,
+}: TransitAppProps = {}) {
+  const [stations, setStations] = useState<Station[]>(() => {
+    if (initialSavedMap && isValidSavedMap(initialSavedMap)) {
+      syncIdCountersFromData(initialSavedMap.stations, initialSavedMap.lines)
+      return initialSavedMap.stations
     }
-  }
-  const lines: Line[] = []
-  if (Array.isArray(d.lines)) {
-    for (const l of d.lines as unknown[]) {
-      if (
-        l != null &&
-        typeof l === 'object' &&
-        typeof (l as Line).id === 'string' &&
-        typeof (l as Line).name === 'string' &&
-        typeof (l as Line).color === 'string' &&
-        Array.isArray((l as Line).stationIds)
-      )
-        lines.push(l as Line)
-    }
-  }
-  const stationLabelOverrides: Record<string, StationLabelOverride> = {}
-  if (d.stationLabelOverrides != null && typeof d.stationLabelOverrides === 'object') {
-    for (const [k, v] of Object.entries(d.stationLabelOverrides as Record<string, unknown>)) {
-      if (typeof k !== 'string' || !v || typeof v !== 'object') continue
-      const o = v as { offset?: unknown; rotationDeg?: unknown }
-      if (!Array.isArray(o.offset) || o.offset.length !== 2 || typeof o.rotationDeg !== 'number') continue
-      stationLabelOverrides[k] = { offset: o.offset as [number, number], rotationDeg: o.rotationDeg }
-    }
-  }
-  return { version, stations, lines, stationLabelOverrides }
-}
-
-export default function TransitApp() {
-  const [stations, setStations] = useState<Station[]>([])
-  const [lines, setLines] = useState<Line[]>([])
+    return []
+  })
+  const [lines, setLines] = useState<Line[]>(() =>
+    initialSavedMap && isValidSavedMap(initialSavedMap) ? initialSavedMap.lines : [],
+  )
+  const draftStorageKey = cloudMapId ? `${DRAFT_STORAGE_KEY}-cloud-${cloudMapId}` : DRAFT_STORAGE_KEY
   const [mode, setMode] = useState<'pan' | 'station' | 'line' | 'edit-line'>('pan')
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [newLineName, setNewLineName] = useState('')
@@ -397,7 +335,11 @@ export default function TransitApp() {
   const [systemMapSelectedLineId, setSystemMapSelectedLineId] = useState<string | null>(null)
   const [systemMapExpandedLineIds, setSystemMapExpandedLineIds] = useState<string[]>([])
   const [showStationNamesOnMap, setShowStationNamesOnMap] = useState(false)
-  const [stationLabelOverrides, setStationLabelOverrides] = useState<Record<string, StationLabelOverride>>({})
+  const [stationLabelOverrides, setStationLabelOverrides] = useState<Record<string, StationLabelOverride>>(() =>
+    initialSavedMap && isValidSavedMap(initialSavedMap)
+      ? (initialSavedMap.stationLabelOverrides ?? {})
+      : {},
+  )
   const [stationLabelFontFamily, setStationLabelFontFamily] = useState<string>('Open Sans')
   const [stationLabelFontSizePxOverride, setStationLabelFontSizePxOverride] = useState<number | null>(null)
   const [addingStationAfter, setAddingStationAfter] = useState<{ lineId: string; afterStationId: string } | null>(null)
@@ -406,6 +348,7 @@ export default function TransitApp() {
   const [systemMapNightTheme, setSystemMapNightTheme] = useState(false)
   const [systemMapFullscreen, setSystemMapFullscreen] = useState(false)
   const [hiddenLineIds, setHiddenLineIds] = useState<string[]>([])
+  const [cloudSyncLabel, setCloudSyncLabel] = useState<string | null>(null)
   const [showDraftBanner, setShowDraftBanner] = useState(false)
   const [autoAddNewStationsToSelectedLine, setAutoAddNewStationsToSelectedLine] = useState(false)
   const [addInfillAtMidpoint, setAddInfillAtMidpoint] = useState(false)
@@ -2958,7 +2901,7 @@ export default function TransitApp() {
     if (draftCheckedRef.current) return
     draftCheckedRef.current = true
     try {
-      const raw = localStorage.getItem(DRAFT_STORAGE_KEY)
+      const raw = localStorage.getItem(draftStorageKey)
       if (!raw) return
       const data = tryRecoverSavedMap(JSON.parse(raw))
       if (data && (data.stations.length > 0 || data.lines.length > 0)) {
@@ -2967,28 +2910,28 @@ export default function TransitApp() {
     } catch {
       /* ignore */
     }
-  }, [])
+  }, [draftStorageKey])
 
   const restoreDraft = useCallback(() => {
     try {
-      const raw = localStorage.getItem(DRAFT_STORAGE_KEY)
+      const raw = localStorage.getItem(draftStorageKey)
       if (!raw) return
       const data = tryRecoverSavedMap(JSON.parse(raw))
       if (data) {
         applyLoadedMap(data)
         setShowDraftBanner(false)
-        localStorage.removeItem(DRAFT_STORAGE_KEY)
+        localStorage.removeItem(draftStorageKey)
       }
     } catch {
       setShowDraftBanner(false)
-      localStorage.removeItem(DRAFT_STORAGE_KEY)
+      localStorage.removeItem(draftStorageKey)
     }
-  }, [applyLoadedMap])
+  }, [applyLoadedMap, draftStorageKey])
 
   const dismissDraft = useCallback(() => {
     setShowDraftBanner(false)
-    localStorage.removeItem(DRAFT_STORAGE_KEY)
-  }, [])
+    localStorage.removeItem(draftStorageKey)
+  }, [draftStorageKey])
 
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -3002,7 +2945,7 @@ export default function TransitApp() {
     if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current)
     draftSaveTimeoutRef.current = setTimeout(() => {
       try {
-        localStorage.setItem(DRAFT_STORAGE_KEY, payload)
+        localStorage.setItem(draftStorageKey, payload)
       } catch {
         /* quota or disabled */
       }
@@ -3011,7 +2954,46 @@ export default function TransitApp() {
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current)
     }
-  }, [stations, lines, stationLabelOverrides])
+  }, [stations, lines, stationLabelOverrides, draftStorageKey])
+
+  const cloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!cloudMapId) return
+    if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current)
+    cloudSaveTimerRef.current = setTimeout(() => {
+      cloudSaveTimerRef.current = null
+      const data = {
+        version: SAVE_VERSION,
+        minReaderVersion: MIN_READER_VERSION,
+        stations,
+        lines,
+        stationLabelOverrides,
+      }
+      void (async () => {
+        try {
+          setCloudSyncLabel('Saving…')
+          const res = await fetch(`/api/map/${cloudMapId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            throw new Error(typeof (body as { error?: string }).error === 'string' ? (body as { error: string }).error : res.statusText)
+          }
+          setCloudSyncLabel('Saved')
+          setTimeout(() => {
+            setCloudSyncLabel((cur) => (cur === 'Saved' ? null : cur))
+          }, 2200)
+        } catch (e) {
+          setCloudSyncLabel(e instanceof Error ? `Save failed: ${e.message}` : 'Save failed')
+        }
+      })()
+    }, 2500)
+    return () => {
+      if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current)
+    }
+  }, [stations, lines, stationLabelOverrides, cloudMapId])
 
   const toggleLineVisibility = useCallback(
     (lineId: string) => {
@@ -3054,7 +3036,20 @@ export default function TransitApp() {
     <>
     <div className="app">
       <header className="appHeader trainboxHeader">
-        <h1 className="appTitle">Trainbox</h1>
+        <div className="appHeaderBrand">
+          <h1 className="appTitle">Trainbox</h1>
+          {cloudMapId ? (
+            <span className="appMapIdBadge" title="Cloud map id">
+              {cloudMapId}
+            </span>
+          ) : null}
+          {cloudSyncLabel ? <span className="appCloudSyncLabel">{cloudSyncLabel}</span> : null}
+        </div>
+        {onNavigateHome ? (
+          <button type="button" className="toolBtn appHomeBtn" onClick={onNavigateHome} title="Back to home">
+            Home
+          </button>
+        ) : null}
         <nav className="appHeaderMenubar" aria-label="Main">
           <div className="fileMenuWrap" ref={fileMenuRef}>
             <button

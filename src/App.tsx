@@ -1,6 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import './App.css'
-import TransitApp from './transit-app/TransitApp'
+import HomePage from './HomePage'
+import LocalEditorPage from './LocalEditorPage'
+import MapEditorPage from './MapEditorPage'
 
 type BoundaryProps = { children: ReactNode }
 type BoundaryState = { error: Error | null }
@@ -55,7 +58,14 @@ class AppErrorBoundary extends Component<BoundaryProps, BoundaryState> {
 export default function App() {
   return (
     <AppErrorBoundary>
-      <TransitApp />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/m/:mapId" element={<MapEditorPage />} />
+          <Route path="/local" element={<LocalEditorPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
     </AppErrorBoundary>
   )
 }

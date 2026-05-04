@@ -728,6 +728,36 @@
   font-size: 11px !important;
 }
 
+.appHeaderBrand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.appMapIdBadge {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.appCloudSyncLabel {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.appHomeBtn {
+  flex-shrink: 0;
+}
+
 .appTitle {
   margin: 0;
   font-size: 1.125rem;
