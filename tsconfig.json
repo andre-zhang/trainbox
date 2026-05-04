@@ -17,6 +17,6 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "mapApi", "server"],
+  "include": ["src", "api", "server"],
   "exclude": []
 }
