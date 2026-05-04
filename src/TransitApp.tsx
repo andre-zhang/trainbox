@@ -35,6 +35,7 @@ import {
 } from './transitGeocode'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 import { allocateCloudMapAndUpload } from './cloudPersist'
+import { parseJsonText } from './parseJsonSafe'
 import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import { IconUndo, IconRedo, IconPan, IconStation, IconLine, IconEditLine } from './transitUiIcons'
 import './App.css'
@@ -1716,38 +1717,39 @@ export default function TransitApp({
 
   const loadMapFromContent = useCallback(
     (content: string, name: string, confirmBeforeRecovery = false): false | SavedMap => {
+      let data: unknown
       try {
-        const data = JSON.parse(content)
-        if (isValidSavedMap(data)) {
-          if (data.version > SAVE_VERSION) {
-            if (
-              !window.confirm(
-                'This file was saved with a newer version of the app. Some features may not work. Load anyway?',
-              )
-            )
-              return false
-          }
-          applyLoadedMap(data, name)
-          return data
-        }
-        const recovered = tryRecoverSavedMap(data)
-        if (recovered) {
-          if (confirmBeforeRecovery) {
-            const tryAnyway = window.confirm(
-              'File format is invalid or from a different version. Try to load what we can? Some data may be missing.',
-            )
-            if (!tryAnyway) return false
-          }
-          applyLoadedMap(recovered, name)
-          notify('Loaded with recovery. Some data may be missing.')
-          return recovered
-        }
-        notify('Invalid map file. Could not load.', 'error')
-        return false
-      } catch {
-        notify('File is not valid JSON. Please choose a file saved from this tool.', 'error')
+        data = parseJsonText(content, 'Map file')
+      } catch (e) {
+        notify(e instanceof Error ? e.message : 'Could not read map file as JSON.', 'error')
         return false
       }
+      if (isValidSavedMap(data)) {
+        if (data.version > SAVE_VERSION) {
+          if (
+            !window.confirm(
+              'This file was saved with a newer version of the app. Some features may not work. Load anyway?',
+            )
+          )
+            return false
+        }
+        applyLoadedMap(data, name)
+        return data
+      }
+      const recovered = tryRecoverSavedMap(data)
+      if (recovered) {
+        if (confirmBeforeRecovery) {
+          const tryAnyway = window.confirm(
+            'File format is invalid or from a different version. Try to load what we can? Some data may be missing.',
+          )
+          if (!tryAnyway) return false
+        }
+        applyLoadedMap(recovered, name)
+        notify('Loaded with recovery. Some data may be missing.')
+        return recovered
+      }
+      notify('Invalid map file. Could not load.', 'error')
+      return false
     },
     [applyLoadedMap, notify],
   )
@@ -2916,7 +2918,7 @@ export default function TransitApp({
     try {
       const raw = localStorage.getItem(draftStorageKey)
       if (!raw) return
-      const data = tryRecoverSavedMap(JSON.parse(raw))
+      const data = tryRecoverSavedMap(parseJsonText(raw, 'Draft'))
       if (data && (data.stations.length > 0 || data.lines.length > 0)) {
         setShowDraftBanner(true)
       }
@@ -2929,7 +2931,7 @@ export default function TransitApp({
     try {
       const raw = localStorage.getItem(draftStorageKey)
       if (!raw) return
-      const data = tryRecoverSavedMap(JSON.parse(raw))
+      const data = tryRecoverSavedMap(parseJsonText(raw, 'Draft'))
       if (data) {
         applyLoadedMap(data)
         setShowDraftBanner(false)
@@ -2990,9 +2992,17 @@ export default function TransitApp({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
           })
-          const body = await res.json().catch(() => ({}))
+          const text = await res.text()
+          let body: { error?: string } = {}
+          if (text.trim()) {
+            try {
+              body = parseJsonText(text, 'Save map') as { error?: string }
+            } catch {
+              body = { error: text.slice(0, 200) }
+            }
+          }
           if (!res.ok) {
-            throw new Error(typeof (body as { error?: string }).error === 'string' ? (body as { error: string }).error : res.statusText)
+            throw new Error(typeof body.error === 'string' ? body.error : res.statusText)
           }
           setCloudSyncLabel('Saved')
           setTimeout(() => {

@@ -1,4 +1,5 @@
 import type { SavedMap } from './savedMapGuards'
+import { parseJsonResponse, parseJsonText } from './parseJsonSafe'
 
 const MIN_READER_VERSION = 2
 
@@ -15,7 +16,7 @@ export function toPersistPayload(map: SavedMap): Record<string, unknown> {
 /** Creates a new cloud map id and uploads the given snapshot. */
 export async function allocateCloudMapAndUpload(map: SavedMap): Promise<string> {
   const res = await fetch('/api/map/create', { method: 'POST' })
-  const json = (await res.json()) as { id?: string; error?: string }
+  const json = (await parseJsonResponse(res, 'Create map')) as { id?: string; error?: string }
   if (!res.ok) {
     throw new Error(json.error || `Create failed (${res.status})`)
   }
@@ -27,7 +28,15 @@ export async function allocateCloudMapAndUpload(map: SavedMap): Promise<string> 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toPersistPayload(map)),
   })
-  const putJson = (await put.json().catch(() => ({}))) as { error?: string }
+  const putText = await put.text()
+  let putJson: { error?: string } = {}
+  if (putText.trim()) {
+    try {
+      putJson = parseJsonText(putText, 'Save map') as { error?: string }
+    } catch {
+      putJson = { error: putText.slice(0, 200) }
+    }
+  }
   if (!put.ok) {
     throw new Error(putJson.error || `Upload failed (${put.status})`)
   }

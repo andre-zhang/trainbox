@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import TransitApp from './TransitApp'
+import { parseJsonText } from './parseJsonSafe'
 import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import './HomePage.css'
 
@@ -37,9 +38,12 @@ export default function MapEditorPage() {
         }
         let parsed: unknown
         try {
-          parsed = JSON.parse(text)
-        } catch {
-          setState({ status: 'error', message: 'Server returned invalid JSON.' })
+          parsed = parseJsonText(text, 'Map data')
+        } catch (e) {
+          setState({
+            status: 'error',
+            message: e instanceof Error ? e.message : 'Server returned invalid JSON.',
+          })
           return
         }
         if (isValidSavedMap(parsed)) {

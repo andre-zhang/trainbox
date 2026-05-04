@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { allocateCloudMapAndUpload } from './cloudPersist'
+import { parseJsonResponse, parseJsonText } from './parseJsonSafe'
 import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import './HomePage.css'
 
@@ -18,7 +19,7 @@ export default function HomePage() {
     setBusy('create')
     try {
       const res = await fetch('/api/map/create', { method: 'POST' })
-      const data = (await res.json()) as { id?: string; error?: string }
+      const data = (await parseJsonResponse(res, 'Create map')) as { id?: string; error?: string }
       if (!res.ok) {
         setError(data.error || `Could not create map (${res.status})`)
         return
@@ -62,7 +63,7 @@ export default function HomePage() {
       void (async () => {
         try {
           const raw = reader.result as string
-          const parsed = JSON.parse(raw) as unknown
+          const parsed = parseJsonText(raw, 'Map file') as unknown
           let map: SavedMap | null = isValidSavedMap(parsed) ? parsed : tryRecoverSavedMap(parsed)
           if (!map) {
             setError('That file is not a valid Trainbox map JSON.')
