@@ -1250,6 +1250,72 @@
   min-height: 0;
 }
 
+/* Mobile: optional full-width map (hide lines sidebar). Desktop ignores hidden state for layout. */
+.systemMapHideLinesPanelBtn {
+  display: none;
+}
+
+.systemMapShowLinesPanelFab {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .systemMapHideLinesPanelBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .systemMapContainer.systemMapSidebarHidden .systemMapSidebar {
+    display: none !important;
+  }
+
+  .systemMapContainer.systemMapSidebarHidden .systemMapMapWrap {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .systemMapShowLinesPanelFab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    z-index: 1100;
+    bottom: max(16px, env(safe-area-inset-bottom, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    max-width: min(200px, 42vw);
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+    cursor: pointer;
+    font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .systemMapShowLinesPanelFab:active {
+    opacity: 0.92;
+  }
+
+  .systemMapContainer.systemMapNight .systemMapShowLinesPanelFab {
+    background: var(--bg);
+    border-color: var(--border-strong);
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+}
+
+@media (min-width: 769px) {
+  .systemMapContainer.systemMapSidebarHidden .systemMapSidebar {
+    display: flex !important;
+  }
+}
+
 .systemMapContainer.systemMapNight {
   --bg: #0f1419;
   --surface: #1a2332;

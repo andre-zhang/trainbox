@@ -351,6 +351,8 @@ export default function TransitApp({
   const [systemMapStationSearch, setSystemMapStationSearch] = useState('')
   const [systemMapNightTheme, setSystemMapNightTheme] = useState(false)
   const [systemMapFullscreen, setSystemMapFullscreen] = useState(false)
+  /** Narrow screens only (see CSS): hide system-map lines panel for full-width map. */
+  const [systemMapSidebarHidden, setSystemMapSidebarHidden] = useState(false)
   const [hiddenLineIds, setHiddenLineIds] = useState<string[]>([])
   const [cloudSyncLabel, setCloudSyncLabel] = useState<string | null>(null)
   const [showDraftBanner, setShowDraftBanner] = useState(false)
@@ -1456,6 +1458,10 @@ export default function TransitApp({
     document.addEventListener('fullscreenchange', onFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [systemMapView, systemMapFullscreen])
+
+  useEffect(() => {
+    if (!systemMapView) setSystemMapSidebarHidden(false)
+  }, [systemMapView])
 
   const saveMapToFile = useCallback(() => {
     const data = {
@@ -3871,10 +3877,12 @@ export default function TransitApp({
           <div
             className={`systemMapContainer ${
               systemMapNightTheme ? 'systemMapNight' : ''
-            } ${systemMapFullscreen ? 'systemMapFullscreen' : ''}`}
+            } ${systemMapFullscreen ? 'systemMapFullscreen' : ''} ${
+              systemMapSidebarHidden ? 'systemMapSidebarHidden' : ''
+            }`}
             ref={systemMapContainerRef}
           >
-            <aside className="sidebar systemMapSidebar">
+            <aside id="system-map-lines-panel" className="sidebar systemMapSidebar">
               <div className="systemMapLegend">
                 <span className="systemMapLegendIcon" aria-hidden>
                   <svg
@@ -3929,6 +3937,14 @@ export default function TransitApp({
                   title={systemMapFullscreen ? 'Exit fullscreen' : 'Fullscreen system map'}
                 >
                   {systemMapFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                </button>
+                <button
+                  type="button"
+                  className="toolBtn systemMapHideLinesPanelBtn"
+                  onClick={() => setSystemMapSidebarHidden(true)}
+                  title="Hide lines panel and use the full screen for the map"
+                >
+                  Map only
                 </button>
               </div>
               {lines.length === 0 ? null : (
@@ -4077,6 +4093,18 @@ export default function TransitApp({
                 markerStylesByMode={markerStylesByMode}
                 onStationRename={() => {}}
               />
+              {systemMapSidebarHidden ? (
+                <button
+                  type="button"
+                  className="systemMapShowLinesPanelFab"
+                  onClick={() => setSystemMapSidebarHidden(false)}
+                  aria-controls="system-map-lines-panel"
+                  aria-expanded={false}
+                  title="Show lines panel and search"
+                >
+                  Show sidebar
+                </button>
+              ) : null}
             </main>
           </div>
         ) : (
