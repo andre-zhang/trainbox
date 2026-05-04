@@ -22,7 +22,12 @@ import {
   TRANSIT_MODES,
   defaultModeVisibility,
 } from './types'
-import { piecewiseQuadraticPathForLine, smoothCurveThroughPoints } from './utils/curve'
+import {
+  cubicStationSegmentMidpoint,
+  piecewiseQuadraticPathForLine,
+  quadraticCurveMidpoint,
+  smoothCurveThroughPoints,
+} from './utils/curve'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 
 const CARTODB_TILES = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
@@ -990,17 +995,20 @@ export function TransitLayer({
     const midpoints: { position: LatLng; afterStationId: string; segmentIndex: number; fromStart?: boolean }[] = []
     for (let s = 0; s < n - 1; s++) {
       const afterId = line.stationIds[s]
+      const nextId = line.stationIds[s + 1]
+      const posA = stationsById.get(afterId)?.position
+      const posB = stationsById.get(nextId)?.position
       const wp = line.waypoints?.find((w) => w.afterStationId === afterId)
       let position: LatLng
-      if (wp) {
-        position = wp.position
+      if (wp && posA && posB) {
+        /* Stored value is Bézier control; handle sits on the curve at t = 0.5. */
+        position = quadraticCurveMidpoint(posA, wp.position, posB)
+      } else if (posA && posB) {
+        const pPrev = s > 0 ? stationsById.get(line.stationIds[s - 1])?.position ?? null : null
+        const pNext = s + 2 < n ? stationsById.get(line.stationIds[s + 2])?.position ?? null : null
+        position = cubicStationSegmentMidpoint(pPrev, posA, posB, pNext)
       } else {
-        const posA = stationsById.get(afterId)?.position
-        const posB = stationsById.get(line.stationIds[s + 1])?.position
-        position =
-          posA && posB
-            ? { lat: (posA.lat + posB.lat) / 2, lng: (posA.lng + posB.lng) / 2 }
-            : curve[Math.floor(curve.length / 2)] ?? curve[0]
+        position = curve[Math.floor(curve.length / 2)] ?? curve[0]
       }
       midpoints.push({ position, afterStationId: afterId, segmentIndex: s })
     }

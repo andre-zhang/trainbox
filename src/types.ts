@@ -46,7 +46,10 @@ export function emptyLinesByMode(): Record<TransitMode, Line[]> {
   return o
 }
 
-/** Optional midpoint between two stations on a line (for curved geometry) */
+/**
+ * Optional bend between two stations. `position` is the **quadratic Bézier control point**
+ * (usually off the drawn line); the rendered curve is the quadratic through the two stops with this control.
+ */
 export type LineWaypoint = {
   afterStationId: string
   position: LatLng

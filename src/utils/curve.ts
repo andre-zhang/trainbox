@@ -65,6 +65,77 @@ export function smoothCurveThroughPoints(positions: LatLng[], stepsPerSegment = 
   return result
 }
 
+/** Point on quadratic Bézier P0 → P2 with control P1 at parameter t ∈ [0, 1]. */
+export function quadraticBezierPointAtT(p0: LatLng, control: LatLng, p2: LatLng, t: number): LatLng {
+  const u = 1 - t
+  return {
+    lat: u * u * p0.lat + 2 * u * t * control.lat + t * t * p2.lat,
+    lng: u * u * p0.lng + 2 * u * t * control.lng + t * t * p2.lng,
+  }
+}
+
+/** Midpoint of the quadratic at t = 0.5: Q(0.5) = 0.25·P0 + 0.5·control + 0.25·P2. */
+export function quadraticCurveMidpoint(p0: LatLng, control: LatLng, p2: LatLng): LatLng {
+  return quadraticBezierPointAtT(p0, control, p2, 0.5)
+}
+
+/**
+ * Invert Q(0.5): given a point on the curve at t=0.5 (the bend you see), recover Bézier control.
+ * Stored waypoint `position` is this control; UI shows {@link quadraticCurveMidpoint}.
+ */
+export function quadraticControlFromCurveMidpoint(p0: LatLng, mid: LatLng, p2: LatLng): LatLng {
+  return {
+    lat: 2 * mid.lat - 0.5 * p0.lat - 0.5 * p2.lat,
+    lng: 2 * mid.lng - 0.5 * p0.lng - 0.5 * p2.lng,
+  }
+}
+
+/** Point on cubic Bézier at t (same basis as {@link sampleCubicBezier}). */
+export function cubicBezierPointAtT(p0: LatLng, cp1: LatLng, cp2: LatLng, p1: LatLng, t: number): LatLng {
+  const u = 1 - t
+  return {
+    lat: u * u * u * p0.lat + 3 * u * u * t * cp1.lat + 3 * u * t * t * cp2.lat + t * t * t * p1.lat,
+    lng: u * u * u * p0.lng + 3 * u * u * t * cp1.lng + 3 * u * t * t * cp2.lng + t * t * t * p1.lng,
+  }
+}
+
+function cubicControlPoints(
+  pPrev: LatLng | null,
+  p0: LatLng,
+  p1: LatLng,
+  pNext: LatLng | null,
+  k: number,
+): { cp1: LatLng; cp2: LatLng } {
+  let tan0: LatLng
+  if (!pPrev) {
+    tan0 = { lat: (p1.lat - p0.lat) * k, lng: (p1.lng - p0.lng) * k }
+  } else {
+    tan0 = { lat: (p1.lat - pPrev.lat) * k, lng: (p1.lng - pPrev.lng) * k }
+  }
+  let tan1: LatLng
+  if (!pNext) {
+    tan1 = { lat: (p1.lat - p0.lat) * k, lng: (p1.lng - p0.lng) * k }
+  } else {
+    tan1 = { lat: (pNext.lat - p0.lat) * k, lng: (pNext.lng - p0.lng) * k }
+  }
+  return {
+    cp1: { lat: p0.lat + tan0.lat, lng: p0.lng + tan0.lng },
+    cp2: { lat: p1.lat - tan1.lat, lng: p1.lng - tan1.lng },
+  }
+}
+
+/** Midpoint (t = 0.5) of the same cubic used in {@link smoothSingleStationSegment}. */
+export function cubicStationSegmentMidpoint(
+  pPrev: LatLng | null,
+  p0: LatLng,
+  p1: LatLng,
+  pNext: LatLng | null,
+  k = 0.25,
+): LatLng {
+  const { cp1, cp2 } = cubicControlPoints(pPrev, p0, p1, pNext, k)
+  return cubicBezierPointAtT(p0, cp1, cp2, p1, 0.5)
+}
+
 /** Quadratic Bézier P0 → P2 with control P1 (one bend between endpoints). */
 export function sampleQuadraticBezier(p0: LatLng, p1: LatLng, p2: LatLng, steps: number): LatLng[] {
   const points: LatLng[] = []
@@ -92,21 +163,22 @@ export function smoothSingleStationSegment(
   steps: number,
   k = 0.25,
 ): LatLng[] {
-  let tan0: LatLng
-  if (!pPrev) {
-    tan0 = { lat: (p1.lat - p0.lat) * k, lng: (p1.lng - p0.lng) * k }
-  } else {
-    tan0 = { lat: (p1.lat - pPrev.lat) * k, lng: (p1.lng - pPrev.lng) * k }
-  }
-  let tan1: LatLng
-  if (!pNext) {
-    tan1 = { lat: (p1.lat - p0.lat) * k, lng: (p1.lng - p0.lng) * k }
-  } else {
-    tan1 = { lat: (pNext.lat - p0.lat) * k, lng: (pNext.lng - p0.lng) * k }
-  }
-  const cp1: LatLng = { lat: p0.lat + tan0.lat, lng: p0.lng + tan0.lng }
-  const cp2: LatLng = { lat: p1.lat - tan1.lat, lng: p1.lng - tan1.lng }
+  const { cp1, cp2 } = cubicControlPoints(pPrev, p0, p1, pNext, k)
   return sampleCubicBezier(p0, cp1, cp2, p1, Math.max(2, steps))
+}
+
+/** After a global smooth, nudge vertices that lie very near a station onto the exact stop coordinate. */
+export function snapPathVerticesToStations(path: LatLng[], stationPoints: LatLng[], maxDistDeg = 0.00012): LatLng[] {
+  if (path.length === 0 || stationPoints.length === 0) return path
+  const thr = maxDistDeg * maxDistDeg
+  return path.map((p) => {
+    for (const s of stationPoints) {
+      const dlat = p.lat - s.lat
+      const dlng = p.lng - s.lng
+      if (dlat * dlat + dlng * dlng <= thr) return { lat: s.lat, lng: s.lng }
+    }
+    return p
+  })
 }
 
 /**
@@ -114,6 +186,9 @@ export function smoothSingleStationSegment(
  * - Legs **with** a handle: quadratic A → handle → B (one deliberate bend; avoids Catmull S on A–W–B).
  * - Legs **without** a handle: same smooth cubic used between stations globally, so joints stay
  *   rounded instead of sharp polygonal jogs from straight chords.
+ *
+ * A light Catmull pass on the joined polyline softens corners at stations; vertices near stops are
+ * snapped back so the line still meets each station exactly.
  */
 export function piecewiseQuadraticPathForLine(
   line: Line,
@@ -148,5 +223,10 @@ export function piecewiseQuadraticPathForLine(
       result.push(...seg.slice(1))
     }
   }
-  return result
+  const stationPts = ids
+    .map((id) => stationPositionById.get(id)?.position)
+    .filter((p): p is LatLng => p != null)
+  const softSteps = Math.min(8, steps)
+  const softened = smoothCurveThroughPoints(result, softSteps)
+  return snapPathVerticesToStations(softened, stationPts)
 }

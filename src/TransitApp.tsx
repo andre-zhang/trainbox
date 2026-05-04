@@ -38,6 +38,7 @@ import { allocateCloudMapAndUpload } from './cloudPersist'
 import { parseJsonText, parseJsonTextLenient } from './parseJsonSafe'
 import { coerceLegacySavedMap, isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import { IconUndo, IconRedo, IconPan, IconStation, IconLine, IconEditLine } from './transitUiIcons'
+import { quadraticControlFromCurveMidpoint, quadraticCurveMidpoint } from './utils/curve'
 import './App.css'
 
 const DEFAULT_CENTER: LatLng = { lat: 43.6532, lng: -79.3832 }
@@ -670,6 +671,7 @@ export default function TransitApp({
         lat: (sa.position.lat + sb.position.lat) / 2 + 0.0018,
         lng: (sa.position.lng + sb.position.lng) / 2 + 0.0018,
       }
+      const control = quadraticControlFromCurveMidpoint(sa.position, mid, sb.position)
       pushHistory(stations, lines, stationLabelOverrides)
       setLines((prev) =>
         prev.map((l) =>
@@ -678,7 +680,7 @@ export default function TransitApp({
                 ...l,
                 waypoints: [
                   ...(l.waypoints ?? []).filter((w) => w.afterStationId !== a),
-                  { afterStationId: a, position: mid },
+                  { afterStationId: a, position: control },
                 ],
               }
             : l,
@@ -702,21 +704,26 @@ export default function TransitApp({
       const afterId = line.stationIds[0]
       const wp = (line.waypoints ?? []).find((w) => w.afterStationId === afterId)
       if (!wp) return
+      const sa = stations.find((s) => s.id === afterId)
+      const sb = stations.find((s) => s.id === line.stationIds[1])
+      if (!sa || !sb) return
       pushHistory(stations, lines, stationLabelOverrides)
-      const position: LatLng = {
-        lat: wp.position.lat + 0.0024,
-        lng: wp.position.lng - 0.0018,
+      const midOld = quadraticCurveMidpoint(sa.position, wp.position, sb.position)
+      const midNew: LatLng = {
+        lat: midOld.lat + 0.0024,
+        lng: midOld.lng - 0.0018,
       }
+      const control = quadraticControlFromCurveMidpoint(sa.position, midNew, sb.position)
       setLines((prev) =>
         prev.map((l) => {
           if (l.id !== lineId) return l
           const next = (l.waypoints ?? []).map((w) =>
-            w.afterStationId === afterId ? { ...w, position } : w,
+            w.afterStationId === afterId ? { ...w, position: control } : w,
           )
           return { ...l, waypoints: next }
         }),
       )
-      setFocusLocation({ type: 'point', ...position, zoom: 15 })
+      setFocusLocation({ type: 'point', ...midNew, zoom: 15 })
     },
     [stations, lines, stationLabelOverrides, pushHistory],
   )
@@ -1158,9 +1165,17 @@ export default function TransitApp({
           setLines((prev) =>
             prev.map((l) => {
               if (l.id !== lineId) return l
+              const si = l.stationIds.indexOf(afterStationId)
+              const posA = si >= 0 ? stations.find((s) => s.id === l.stationIds[si])?.position : undefined
+              const posB =
+                si >= 0 && si + 1 < l.stationIds.length
+                  ? stations.find((s) => s.id === l.stationIds[si + 1])?.position
+                  : undefined
+              const control =
+                posA && posB ? quadraticControlFromCurveMidpoint(posA, position, posB) : position
               const waypoints = l.waypoints ? [...l.waypoints] : []
               const idx = waypoints.findIndex((w) => w.afterStationId === afterStationId)
-              const wp = { afterStationId, position }
+              const wp = { afterStationId, position: control }
               if (idx >= 0) waypoints[idx] = wp
               else waypoints.push(wp)
               return { ...l, waypoints }
