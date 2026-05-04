@@ -3092,7 +3092,20 @@ export default function TransitApp({
     <div className="app">
       <header className="appHeader trainboxHeader">
         <div className="appHeaderBrand">
-          <h1 className="appTitle">Trainbox</h1>
+          <h1 className="appTitle">
+            {onNavigateHome ? (
+              <button
+                type="button"
+                className="appTitleLink"
+                onClick={onNavigateHome}
+                title="Back to home"
+              >
+                Trainbox
+              </button>
+            ) : (
+              'Trainbox'
+            )}
+          </h1>
           {cloudMapId ? (
             <span className="appMapIdBadge" title="Cloud map id">
               {cloudMapId}
@@ -3100,11 +3113,6 @@ export default function TransitApp({
           ) : null}
           {cloudSyncLabel ? <span className="appCloudSyncLabel">{cloudSyncLabel}</span> : null}
         </div>
-        {onNavigateHome ? (
-          <button type="button" className="toolBtn appHomeBtn" onClick={onNavigateHome} title="Back to home">
-            Home
-          </button>
-        ) : null}
         <nav className="appHeaderMenubar" aria-label="Main">
           <div className="fileMenuWrap" ref={fileMenuRef}>
             <button
@@ -4891,6 +4899,7 @@ export default function TransitApp({
                 onRemoveStationFromLine={removeStationFromLine}
                 onStationMove={moveStation}
                 onLineSegmentClick={addStationOnLineSegment}
+                midpointHandleClicksTriggerInfill={addInfillAtMidpoint}
                 onLineMidpointDrop={addLineMidpointDrop}
                 addingStationAfter={addingStationAfter}
                 onAddStationBetween={addStationBetween}

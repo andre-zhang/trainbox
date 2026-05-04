@@ -754,16 +754,37 @@
   white-space: nowrap;
 }
 
-.appHomeBtn {
-  flex-shrink: 0;
-}
-
 .appTitle {
   margin: 0;
   font-size: 1.125rem;
   font-weight: 600;
   color: var(--text);
   letter-spacing: -0.02em;
+}
+
+.appTitleLink {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.appTitleLink:hover {
+  opacity: 0.88;
+}
+
+.appTitleLink:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .appHeaderActions {
