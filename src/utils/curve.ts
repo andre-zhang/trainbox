@@ -80,24 +80,40 @@ export function sampleQuadraticBezier(p0: LatLng, p1: LatLng, p2: LatLng, steps:
   return points
 }
 
-function sampleLineSegment(a: LatLng, b: LatLng, steps: number): LatLng[] {
-  const points: LatLng[] = []
-  const n = Math.max(1, steps)
-  for (let i = 0; i <= n; i++) {
-    const t = i / n
-    points.push({
-      lat: a.lat + t * (b.lat - a.lat),
-      lng: a.lng + t * (b.lng - a.lng),
-    })
+/**
+ * One Catmull-style cubic segment from p0 → p1 (same tangent construction as
+ * {@link smoothCurveThroughPoints}), using neighbour stations for continuity at joints.
+ */
+export function smoothSingleStationSegment(
+  pPrev: LatLng | null,
+  p0: LatLng,
+  p1: LatLng,
+  pNext: LatLng | null,
+  steps: number,
+  k = 0.25,
+): LatLng[] {
+  let tan0: LatLng
+  if (!pPrev) {
+    tan0 = { lat: (p1.lat - p0.lat) * k, lng: (p1.lng - p0.lng) * k }
+  } else {
+    tan0 = { lat: (p1.lat - pPrev.lat) * k, lng: (p1.lng - pPrev.lng) * k }
   }
-  return points
+  let tan1: LatLng
+  if (!pNext) {
+    tan1 = { lat: (p1.lat - p0.lat) * k, lng: (p1.lng - p0.lng) * k }
+  } else {
+    tan1 = { lat: (pNext.lat - p0.lat) * k, lng: (pNext.lng - p0.lng) * k }
+  }
+  const cp1: LatLng = { lat: p0.lat + tan0.lat, lng: p0.lng + tan0.lng }
+  const cp2: LatLng = { lat: p1.lat - tan1.lat, lng: p1.lng - tan1.lng }
+  return sampleCubicBezier(p0, cp1, cp2, p1, Math.max(2, steps))
 }
 
 /**
  * Build the displayed line path when the line has midpoint waypoints.
- * Each station→station leg uses at most one bend: quadratic through the optional handle,
- * or a straight chord if there is no handle. Avoids running Catmull-style smoothing over
- * [station, waypoint, station], which creates an S / zigzag between the same two stops.
+ * - Legs **with** a handle: quadratic A → handle → B (one deliberate bend; avoids Catmull S on A–W–B).
+ * - Legs **without** a handle: same smooth cubic used between stations globally, so joints stay
+ *   rounded instead of sharp polygonal jogs from straight chords.
  */
 export function piecewiseQuadraticPathForLine(
   line: Line,
@@ -112,12 +128,20 @@ export function piecewiseQuadraticPathForLine(
   }
   const result: LatLng[] = []
   const steps = Math.max(2, stepsPerSegment)
-  for (let i = 0; i < ids.length - 1; i++) {
+  const n = ids.length
+  for (let i = 0; i < n - 1; i++) {
     const posA = stationPositionById.get(ids[i])?.position
     const posB = stationPositionById.get(ids[i + 1])?.position
     if (!posA || !posB) continue
     const wp = wpByAfter.get(ids[i])
-    const seg = wp ? sampleQuadraticBezier(posA, wp, posB, steps) : sampleLineSegment(posA, posB, Math.min(steps, 10))
+    let seg: LatLng[]
+    if (wp) {
+      seg = sampleQuadraticBezier(posA, wp, posB, steps)
+    } else {
+      const pPrev = i > 0 ? stationPositionById.get(ids[i - 1])?.position ?? null : null
+      const pNext = i + 2 < n ? stationPositionById.get(ids[i + 2])?.position ?? null : null
+      seg = smoothSingleStationSegment(pPrev, posA, posB, pNext, steps)
+    }
     if (result.length === 0) {
       result.push(...seg)
     } else {
