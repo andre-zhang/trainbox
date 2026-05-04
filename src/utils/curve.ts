@@ -1,4 +1,4 @@
-import type { LatLng } from '../types'
+import type { LatLng, Line } from '../types'
 
 /**
  * Sample a cubic Bezier curve (P0, cp1, cp2, P1) at N points in lat/lng space.
@@ -62,5 +62,67 @@ export function smoothCurveThroughPoints(positions: LatLng[], stepsPerSegment = 
     }
   }
 
+  return result
+}
+
+/** Quadratic Bézier P0 → P2 with control P1 (one bend between endpoints). */
+export function sampleQuadraticBezier(p0: LatLng, p1: LatLng, p2: LatLng, steps: number): LatLng[] {
+  const points: LatLng[] = []
+  const n = Math.max(2, steps)
+  for (let i = 0; i <= n; i++) {
+    const t = i / n
+    const u = 1 - t
+    points.push({
+      lat: u * u * p0.lat + 2 * u * t * p1.lat + t * t * p2.lat,
+      lng: u * u * p0.lng + 2 * u * t * p1.lng + t * t * p2.lng,
+    })
+  }
+  return points
+}
+
+function sampleLineSegment(a: LatLng, b: LatLng, steps: number): LatLng[] {
+  const points: LatLng[] = []
+  const n = Math.max(1, steps)
+  for (let i = 0; i <= n; i++) {
+    const t = i / n
+    points.push({
+      lat: a.lat + t * (b.lat - a.lat),
+      lng: a.lng + t * (b.lng - a.lng),
+    })
+  }
+  return points
+}
+
+/**
+ * Build the displayed line path when the line has midpoint waypoints.
+ * Each station→station leg uses at most one bend: quadratic through the optional handle,
+ * or a straight chord if there is no handle. Avoids running Catmull-style smoothing over
+ * [station, waypoint, station], which creates an S / zigzag between the same two stops.
+ */
+export function piecewiseQuadraticPathForLine(
+  line: Line,
+  stationPositionById: ReadonlyMap<string, { position: LatLng }>,
+  stepsPerSegment: number,
+): LatLng[] {
+  const ids = line.stationIds
+  if (ids.length < 2) return []
+  const wpByAfter = new Map<string, LatLng>()
+  for (const w of line.waypoints ?? []) {
+    wpByAfter.set(w.afterStationId, w.position)
+  }
+  const result: LatLng[] = []
+  const steps = Math.max(2, stepsPerSegment)
+  for (let i = 0; i < ids.length - 1; i++) {
+    const posA = stationPositionById.get(ids[i])?.position
+    const posB = stationPositionById.get(ids[i + 1])?.position
+    if (!posA || !posB) continue
+    const wp = wpByAfter.get(ids[i])
+    const seg = wp ? sampleQuadraticBezier(posA, wp, posB, steps) : sampleLineSegment(posA, posB, Math.min(steps, 10))
+    if (result.length === 0) {
+      result.push(...seg)
+    } else {
+      result.push(...seg.slice(1))
+    }
+  }
   return result
 }

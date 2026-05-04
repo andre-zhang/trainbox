@@ -22,7 +22,7 @@ import {
   TRANSIT_MODES,
   defaultModeVisibility,
 } from './types'
-import { smoothCurveThroughPoints } from './utils/curve'
+import { piecewiseQuadraticPathForLine, smoothCurveThroughPoints } from './utils/curve'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 
 const CARTODB_TILES = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
@@ -622,9 +622,13 @@ export function TransitLayer({
           zoom < 10 || (!isRail && stations.length > 1600 && n > 24)
         if (skipSmooth) return positions
         const steps = n > 140 ? 7 : n > 70 ? 9 : 12
+        const hasWaypoints = (line.waypoints?.length ?? 0) > 0
+        if (hasWaypoints) {
+          return piecewiseQuadraticPathForLine(line, stationsById, steps)
+        }
         return smoothCurveThroughPoints(positions, steps)
       }),
-    [rawLinePositions, zoom, stations.length, lines],
+    [rawLinePositions, zoom, stations.length, lines, stationsById],
   )
 
   const selectedLine = selectedLineId ? lines.find((l) => l.id === selectedLineId) : null
@@ -983,15 +987,6 @@ export function TransitLayer({
       curvePts = fallback
     }
     const curve = curvePts
-    const STEPS_PER_SEGMENT = 12
-    let posIndex = 0
-    const posIndexForStation: number[] = []
-    for (let s = 0; s < n; s++) {
-      posIndexForStation[s] = posIndex
-      posIndex += 1
-      const wp = line.waypoints?.find((w) => w.afterStationId === line.stationIds[s])
-      if (wp) posIndex += 1
-    }
     const midpoints: { position: LatLng; afterStationId: string; segmentIndex: number; fromStart?: boolean }[] = []
     for (let s = 0; s < n - 1; s++) {
       const afterId = line.stationIds[s]
@@ -1000,19 +995,12 @@ export function TransitLayer({
       if (wp) {
         position = wp.position
       } else {
-        const curveStart = posIndexForStation[s] * STEPS_PER_SEGMENT
-        const curveEnd = posIndexForStation[s + 1] * STEPS_PER_SEGMENT
-        const midCurveIndex = Math.floor((curveStart + curveEnd) / 2)
-        if (midCurveIndex >= 0 && midCurveIndex < curve.length) {
-          position = curve[midCurveIndex]
-        } else {
-          const posA = stationsById.get(afterId)?.position
-          const posB = stationsById.get(line.stationIds[s + 1])?.position
-          position =
-            posA && posB
-              ? { lat: (posA.lat + posB.lat) / 2, lng: (posA.lng + posB.lng) / 2 }
-              : curve[Math.min(midCurveIndex, curve.length - 1)] ?? curve[0]
-        }
+        const posA = stationsById.get(afterId)?.position
+        const posB = stationsById.get(line.stationIds[s + 1])?.position
+        position =
+          posA && posB
+            ? { lat: (posA.lat + posB.lat) / 2, lng: (posA.lng + posB.lng) / 2 }
+            : curve[Math.floor(curve.length / 2)] ?? curve[0]
       }
       midpoints.push({ position, afterStationId: afterId, segmentIndex: s })
     }
@@ -1565,7 +1553,10 @@ function FlyToController({
         onFocusComplete()
         return
       }
-      const curve = smoothCurveThroughPoints(positions)
+      const hasWaypoints = (line.waypoints?.length ?? 0) > 0
+      const curve = hasWaypoints
+        ? piecewiseQuadraticPathForLine(line, stationsById, 12)
+        : smoothCurveThroughPoints(positions)
       const bounds = L.latLngBounds(curve.map((p) => [p.lat, p.lng] as [number, number]))
       let cancelled = false
       const rafId = requestAnimationFrame(() => {
