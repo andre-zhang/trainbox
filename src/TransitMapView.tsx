@@ -395,7 +395,6 @@ export function TransitLayer({
   onRemoveStationFromLine,
   onStationMove,
   onLineSegmentClick,
-  midpointHandleClicksTriggerInfill,
   onLineMidpointDrop,
   hiddenLineIds,
   modeVisibility: modeVisibilityProp,
@@ -416,9 +415,13 @@ export function TransitLayer({
   onRemoveStationFromLine: (lineId: string, stationId: string) => void
   onStationMove?: (stationId: string, position: LatLng) => void
   onLineSegmentClick?: (lineId: string, position: LatLng, lineIndex?: number) => void
-  /** Plain click on interior midpoint handles runs segment infill (handles sit above the polyline). */
-  midpointHandleClicksTriggerInfill?: boolean
-  onLineMidpointDrop?: (lineId: string, afterStationId: string, position: LatLng, fromStart?: boolean) => void
+  onLineMidpointDrop?: (
+    lineId: string,
+    afterStationId: string,
+    position: LatLng,
+    fromStart?: boolean,
+    dragStart?: LatLng | null,
+  ) => void
   showStationNamesOnMap?: boolean
   stationLabelOverrides?: Record<string, StationLabelOverride>
   stationLabelFontFamily?: string
@@ -455,9 +458,8 @@ export function TransitLayer({
 
   const map = useMap()
   const panesCreatedRef = useRef(false)
-  /** Midpoint handle: Leaflet may fire `click` after `dragend`; skip infill when the handle actually moved. */
+  /** Last drag-start position for the midpoint handle being dragged (infill vs bend uses movement in parent). */
   const midpointDragStartLlRef = useRef<LatLng | null>(null)
-  const midpointHandleMeaningfulDragRef = useRef(false)
   useEffect(() => {
     if (panesCreatedRef.current) return
     panesCreatedRef.current = true
@@ -1118,15 +1120,6 @@ export function TransitLayer({
         selectedLineMidpoints.map((mp) => {
           const lastSid = selectedLine.stationIds[selectedLine.stationIds.length - 1]
           const isExtendEnd = mp.afterStationId === lastSid && !mp.fromStart
-          const nSeg = selectedLine.stationIds.length
-          const isInteriorSegmentMid =
-            nSeg >= 2 && mp.segmentIndex >= 0 && mp.segmentIndex <= nSeg - 2
-          const lineIdx = lines.findIndex((l) => l.id === selectedLine.id)
-          const infillClick =
-            midpointHandleClicksTriggerInfill &&
-            onLineSegmentClick &&
-            isInteriorSegmentMid &&
-            lineIdx >= 0
           return (
           <Marker
             key={`mid-${selectedLine.id}-${mp.segmentIndex}`}
@@ -1136,39 +1129,21 @@ export function TransitLayer({
             zIndexOffset={100}
             draggable
             eventHandlers={{
-              ...(infillClick
-                ? {
-                    dragstart: (e: L.LeafletEvent) => {
-                      const ll = (e.target as L.Marker).getLatLng()
-                      midpointDragStartLlRef.current = { lat: ll.lat, lng: ll.lng }
-                      midpointHandleMeaningfulDragRef.current = false
-                    },
-                  }
-                : {}),
+              dragstart: (e: L.LeafletEvent) => {
+                const ll = (e.target as L.Marker).getLatLng()
+                midpointDragStartLlRef.current = { lat: ll.lat, lng: ll.lng }
+              },
               dragend: (e) => {
                 const ll = (e.target as L.Marker).getLatLng()
-                if (infillClick) {
-                  const st = midpointDragStartLlRef.current
-                  const moved =
-                    !!st &&
-                    (Math.abs(ll.lat - st.lat) + Math.abs(ll.lng - st.lng) > 2e-7)
-                  midpointHandleMeaningfulDragRef.current = moved
-                }
-                onLineMidpointDrop(selectedLine.id, mp.afterStationId, ll, mp.fromStart)
+                const start = midpointDragStartLlRef.current
+                onLineMidpointDrop(
+                  selectedLine.id,
+                  mp.afterStationId,
+                  { lat: ll.lat, lng: ll.lng },
+                  mp.fromStart,
+                  start,
+                )
               },
-              ...(infillClick
-                ? {
-                    click: (e: L.LeafletMouseEvent) => {
-                      if (midpointHandleMeaningfulDragRef.current) {
-                        midpointHandleMeaningfulDragRef.current = false
-                        L.DomEvent.stopPropagation(e.originalEvent)
-                        return
-                      }
-                      L.DomEvent.stopPropagation(e.originalEvent)
-                      onLineSegmentClick(selectedLine.id, { lat: e.latlng.lat, lng: e.latlng.lng }, lineIdx)
-                    },
-                  }
-                : {}),
             }}
           />
           )
@@ -1515,8 +1490,13 @@ interface TransitMapViewProps {
   onRemoveStationFromLine: (lineId: string, stationId: string) => void
   onStationMove: (stationId: string, position: LatLng) => void
   onLineSegmentClick: (lineId: string, position: LatLng, lineIndex?: number) => void
-  midpointHandleClicksTriggerInfill?: boolean
-  onLineMidpointDrop: (lineId: string, afterStationId: string, position: LatLng, fromStart?: boolean) => void
+  onLineMidpointDrop: (
+    lineId: string,
+    afterStationId: string,
+    position: LatLng,
+    fromStart?: boolean,
+    dragStart?: LatLng | null,
+  ) => void
   addingStationAfter: { lineId: string; afterStationId: string } | null
   onAddStationBetween: (lineId: string, afterStationId: string, pos: LatLng) => void
   systemMapView?: boolean
@@ -1760,7 +1740,6 @@ export default function TransitMapView({
   onRemoveStationFromLine,
   onStationMove,
   onLineSegmentClick,
-  midpointHandleClicksTriggerInfill,
   onLineMidpointDrop,
   addingStationAfter,
   onAddStationBetween,
@@ -1823,7 +1802,6 @@ export default function TransitMapView({
         onRemoveStationFromLine={onRemoveStationFromLine}
         onStationMove={onStationMove}
         onLineSegmentClick={onLineSegmentClick}
-        midpointHandleClicksTriggerInfill={midpointHandleClicksTriggerInfill}
         onLineMidpointDrop={onLineMidpointDrop}
         hiddenLineIds={hiddenLineIds}
         modeVisibility={modeVisibility}

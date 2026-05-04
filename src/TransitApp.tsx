@@ -1075,7 +1075,13 @@ export default function TransitApp({
   }, [])
 
   const addLineMidpointDrop = useCallback(
-    (lineId: string, afterStationId: string, position: LatLng, fromStart?: boolean) => {
+    (
+      lineId: string,
+      afterStationId: string,
+      position: LatLng,
+      fromStart?: boolean,
+      dragStart?: LatLng | null,
+    ) => {
       pushHistory(stations, lines, stationLabelOverrides)
       const line = lines.find((l) => l.id === lineId)
       if (!line) return
@@ -1136,7 +1142,18 @@ export default function TransitApp({
         const isExtendFromEnd = !fromStart && afterStationId === lastStationId
         const isExtendFromStart = fromStart && afterStationId === firstStationId
         const isExtendDrop = isExtendFromEnd || isExtendFromStart
-        /* Midpoint handle drag: only extend-from-terminus adds a station; infill is segment-click only. */
+        const si = line.stationIds.indexOf(afterStationId)
+        const dragged =
+          !!dragStart &&
+          Math.abs(position.lat - dragStart.lat) + Math.abs(position.lng - dragStart.lng) > 2e-7
+        const canInfillOnInteriorDrag =
+          addInfillAtMidpoint &&
+          dragged &&
+          !isExtendDrop &&
+          si >= 0 &&
+          si + 1 < line.stationIds.length
+
+        /* Midpoint handle: terminus handles extend the line; interior + infill adds a station on drag. */
         if (isExtendDrop) {
           const newId = generateStationId()
           const newStation: Station = {
@@ -1161,15 +1178,37 @@ export default function TransitApp({
               }
             }),
           )
+        } else if (canInfillOnInteriorDrag) {
+          const newId = generateStationId()
+          const newStation: Station = {
+            id: newId,
+            name: autoStationNames ? UNNAMED_STOP_PLACEHOLDER : `Station ${stations.length + 1}`,
+            position,
+          }
+          setStations((prev) => [...prev, newStation])
+          if (autoStationNames) queueReverseNameForStation(newId, position)
+          setLines((prev) =>
+            prev.map((l) => {
+              if (l.id !== lineId) return l
+              const newStationIds = insertAfter(l.stationIds, afterStationId, newId)
+              const newWaypoints = l.waypoints?.filter((w) => w.afterStationId !== afterStationId) ?? []
+              return {
+                ...l,
+                stationIds: newStationIds,
+                waypoints: newWaypoints.length > 0 ? newWaypoints : undefined,
+              }
+            }),
+          )
         } else {
           setLines((prev) =>
             prev.map((l) => {
               if (l.id !== lineId) return l
-              const si = l.stationIds.indexOf(afterStationId)
-              const posA = si >= 0 ? stations.find((s) => s.id === l.stationIds[si])?.position : undefined
+              const siInner = l.stationIds.indexOf(afterStationId)
+              const posA =
+                siInner >= 0 ? stations.find((s) => s.id === l.stationIds[siInner])?.position : undefined
               const posB =
-                si >= 0 && si + 1 < l.stationIds.length
-                  ? stations.find((s) => s.id === l.stationIds[si + 1])?.position
+                siInner >= 0 && siInner + 1 < l.stationIds.length
+                  ? stations.find((s) => s.id === l.stationIds[siInner + 1])?.position
                   : undefined
               const control =
                 posA && posB ? quadraticControlFromCurveMidpoint(posA, position, posB) : position
@@ -1188,6 +1227,7 @@ export default function TransitApp({
       lines,
       stations,
       stationLabelOverrides,
+      addInfillAtMidpoint,
       distM,
       insertAfter,
       pushHistory,
@@ -2615,7 +2655,7 @@ export default function TransitApp({
 
       await pointAt(
         demoInfillCheckboxRef.current,
-        'Optional: infill adds a stop when you click a line segment.',
+        'Optional: infill adds a stop when you click a line segment (chord midpoint) or drag an interior blue handle (new stop where you release).',
       )
       ctx().setAddInfillAtMidpoint(true)
       await sleep(z(820))
@@ -4899,7 +4939,6 @@ export default function TransitApp({
                 onRemoveStationFromLine={removeStationFromLine}
                 onStationMove={moveStation}
                 onLineSegmentClick={addStationOnLineSegment}
-                midpointHandleClicksTriggerInfill={addInfillAtMidpoint}
                 onLineMidpointDrop={addLineMidpointDrop}
                 addingStationAfter={addingStationAfter}
                 onAddStationBetween={addStationBetween}
