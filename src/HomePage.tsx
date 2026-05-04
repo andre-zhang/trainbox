@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { allocateCloudMapAndUpload } from './cloudPersist'
-import { parseJsonResponse, parseJsonText } from './parseJsonSafe'
-import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
+import { parseJsonResponse, parseJsonTextLenient } from './parseJsonSafe'
+import { coerceLegacySavedMap, isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import './HomePage.css'
 
 const MAX_LOAD_BYTES = 5 * 1024 * 1024
@@ -63,18 +63,17 @@ export default function HomePage() {
       void (async () => {
         try {
           const raw = reader.result as string
-          const parsed = parseJsonText(raw, 'Map file') as unknown
-          let map: SavedMap | null = isValidSavedMap(parsed) ? parsed : tryRecoverSavedMap(parsed)
+          const parsed = parseJsonTextLenient(raw, 'Map file') as unknown
+          const wasStrictValid = isValidSavedMap(parsed)
+          let map: SavedMap | null = wasStrictValid
+            ? parsed
+            : coerceLegacySavedMap(parsed) ?? tryRecoverSavedMap(parsed)
           if (!map) {
             setError('That file is not a valid Trainbox map JSON.')
             return
           }
-          if (!isValidSavedMap(parsed)) {
-            if (
-              !window.confirm(
-                'File format is partial or older. Try to load what we can? Some data may be missing.',
-              )
-            ) {
+          if (!wasStrictValid) {
+            if (!window.confirm('Older or partial map format. Load and normalize?')) {
               return
             }
           }

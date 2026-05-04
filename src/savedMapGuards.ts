@@ -1,4 +1,26 @@
 import type { Line, Station, StationLabelOverride } from './types'
+import { isTransitMode } from './types'
+
+const DEFAULT_LINE_WEIGHT = 3
+const DEFAULT_LINE_COLOR = '#666666'
+
+function readFiniteNumber(x: unknown): number | null {
+  if (typeof x === 'number' && Number.isFinite(x)) return x
+  if (typeof x === 'string' && x.trim() !== '') {
+    const n = Number(x)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+function coerceLatLng(p: unknown): { lat: number; lng: number } | null {
+  if (!p || typeof p !== 'object') return null
+  const o = p as Record<string, unknown>
+  const lat = readFiniteNumber(o.lat)
+  const lng = readFiniteNumber(o.lng)
+  if (lat == null || lng == null) return null
+  return { lat, lng }
+}
 
 export interface SavedMap {
   version: number
@@ -82,4 +104,78 @@ export function tryRecoverSavedMap(data: unknown): SavedMap | null {
     }
   }
   return { version, stations, lines, stationLabelOverrides }
+}
+
+/**
+ * Upgrade older / looser save files (string lat/lng, missing line.weight, bad label overrides, etc.).
+ */
+export function coerceLegacySavedMap(data: unknown): SavedMap | null {
+  if (!data || typeof data !== 'object') return null
+  const d = data as Record<string, unknown>
+  const versionRaw = d.version
+  const version =
+    typeof versionRaw === 'number' && Number.isFinite(versionRaw) && versionRaw >= 1
+      ? versionRaw
+      : readFiniteNumber(versionRaw) ?? 1
+
+  const stations: Station[] = []
+  if (Array.isArray(d.stations)) {
+    for (const s of d.stations as unknown[]) {
+      if (!s || typeof s !== 'object') continue
+      const o = s as Record<string, unknown>
+      if (typeof o.id !== 'string' || typeof o.name !== 'string') continue
+      const pos = coerceLatLng(o.position)
+      if (!pos) continue
+      stations.push({ id: o.id, name: o.name, position: pos })
+    }
+  }
+
+  const lines: Line[] = []
+  if (Array.isArray(d.lines)) {
+    for (const l of d.lines as unknown[]) {
+      if (!l || typeof l !== 'object') continue
+      const o = l as Record<string, unknown>
+      if (typeof o.id !== 'string') continue
+      const name = typeof o.name === 'string' ? o.name : 'Line'
+      const color = typeof o.color === 'string' ? o.color : DEFAULT_LINE_COLOR
+      const w = readFiniteNumber(o.weight)
+      const weight = w != null && w > 0 ? w : DEFAULT_LINE_WEIGHT
+      const stationIds = Array.isArray(o.stationIds) ? o.stationIds.filter((id): id is string => typeof id === 'string') : []
+      const line: Line = {
+        id: o.id,
+        name,
+        color,
+        weight,
+        stationIds,
+      }
+      if (typeof o.mode === 'string' && isTransitMode(o.mode)) line.mode = o.mode
+      if (Array.isArray(o.waypoints)) line.waypoints = o.waypoints as Line['waypoints']
+      if (typeof o.dashArray === 'string') line.dashArray = o.dashArray
+      if (typeof o.planned === 'boolean') line.planned = o.planned
+      if (typeof o.expressEnabled === 'boolean') line.expressEnabled = o.expressEnabled
+      if (Array.isArray(o.expressStationIds)) {
+        line.expressStationIds = o.expressStationIds.filter((id): id is string => typeof id === 'string')
+      }
+      lines.push(line)
+    }
+  }
+
+  const stationLabelOverrides: Record<string, StationLabelOverride> = {}
+  if (d.stationLabelOverrides != null && typeof d.stationLabelOverrides === 'object') {
+    for (const [k, v] of Object.entries(d.stationLabelOverrides as Record<string, unknown>)) {
+      if (typeof k !== 'string' || !v || typeof v !== 'object') continue
+      const o = v as { offset?: unknown; rotationDeg?: unknown }
+      if (!Array.isArray(o.offset) || o.offset.length !== 2) continue
+      const rot = readFiniteNumber(o.rotationDeg)
+      if (rot == null) continue
+      const ox = readFiniteNumber(o.offset[0])
+      const oy = readFiniteNumber(o.offset[1])
+      if (ox == null || oy == null) continue
+      stationLabelOverrides[k] = { offset: [ox, oy], rotationDeg: rot }
+    }
+  }
+
+  const out: SavedMap = { version, stations, lines, stationLabelOverrides }
+  if (!isValidSavedMap(out)) return null
+  return out
 }

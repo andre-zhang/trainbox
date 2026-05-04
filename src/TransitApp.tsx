@@ -35,8 +35,8 @@ import {
 } from './transitGeocode'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 import { allocateCloudMapAndUpload } from './cloudPersist'
-import { parseJsonText } from './parseJsonSafe'
-import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
+import { parseJsonText, parseJsonTextLenient } from './parseJsonSafe'
+import { coerceLegacySavedMap, isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import { IconUndo, IconRedo, IconPan, IconStation, IconLine, IconEditLine } from './transitUiIcons'
 import './App.css'
 
@@ -1719,7 +1719,7 @@ export default function TransitApp({
     (content: string, name: string, confirmBeforeRecovery = false): false | SavedMap => {
       let data: unknown
       try {
-        data = parseJsonText(content, 'Map file')
+        data = parseJsonTextLenient(content, 'Map file')
       } catch (e) {
         notify(e instanceof Error ? e.message : 'Could not read map file as JSON.', 'error')
         return false
@@ -1735,6 +1735,17 @@ export default function TransitApp({
         }
         applyLoadedMap(data, name)
         return data
+      }
+      const coerced = coerceLegacySavedMap(data)
+      if (coerced) {
+        if (confirmBeforeRecovery) {
+          const tryAnyway = window.confirm(
+            'This file is an older or slightly different format. Load it (we will normalize stations, lines, and labels)?',
+          )
+          if (!tryAnyway) return false
+        }
+        applyLoadedMap(coerced, name)
+        return coerced
       }
       const recovered = tryRecoverSavedMap(data)
       if (recovered) {
