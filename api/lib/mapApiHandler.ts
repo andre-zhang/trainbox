@@ -1,4 +1,4 @@
-import type { NeonQueryFunction } from '@neondatabase/serverless'
+import { neon, type NeonQueryFunction } from '@neondatabase/serverless'
 
 type Sql = NeonQueryFunction<false, false>
 
@@ -18,17 +18,35 @@ function emptyPayloadString(): string {
 }
 
 let schemaReady: Promise<void> | null = null
-
-/** Lazy-load Neon so the function module can load even if the driver fails to init in some runtimes. */
 let sqlSingleton: Promise<Sql> | null = null
+
+function resetMapApiConnections(): void {
+  sqlSingleton = null
+  schemaReady = null
+}
+
+/** Neon + Vercel often expose different env names; trim avoids stray newlines from copy/paste. */
+function databaseUrlFromEnv(): string | undefined {
+  const candidates = [
+    process.env.DATABASE_URL,
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_PRISMA_URL,
+    process.env.POSTGRES_URL_NON_POOLING,
+  ]
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue
+    const t = raw.trim()
+    if (t.length > 0) return t
+  }
+  return undefined
+}
 
 function getSql(): Promise<Sql> {
   if (!sqlSingleton) {
     sqlSingleton = (async () => {
-      const { neon } = await import('@neondatabase/serverless')
-      const url = process.env.DATABASE_URL
-      if (!url || typeof url !== 'string') {
-        throw new Error('DATABASE_URL is not set')
+      const url = databaseUrlFromEnv()
+      if (!url) {
+        throw new Error('DATABASE_URL is not set (or use POSTGRES_URL from Vercel Storage)')
       }
       return neon(url)
     })()
@@ -64,10 +82,7 @@ async function allocateMapId(sql: Sql): Promise<string> {
   for (let attempt = 0; attempt < 80; attempt++) {
     const id = randomFourDigitId()
     try {
-      await sql`
-        INSERT INTO transit_maps (id, payload)
-        VALUES (${id}, ${empty}::jsonb)
-      `
+      await sql.query('INSERT INTO transit_maps (id, payload) VALUES ($1, $2::jsonb)', [id, empty])
       return id
     } catch (e: unknown) {
       const code = typeof e === 'object' && e && 'code' in e ? String((e as { code: string }).code) : ''
@@ -128,8 +143,10 @@ export async function mapApiHandler(input: MapApiInput): Promise<MapApiResult> {
     }
 
     if (input.method === 'GET') {
-      const rows = await sql`SELECT payload FROM transit_maps WHERE id = ${mapId}`
-      const row = rows[0] as { payload: unknown } | undefined
+      const rows = (await sql.query('SELECT payload FROM transit_maps WHERE id = $1', [
+        mapId,
+      ])) as { payload: unknown }[]
+      const row = rows[0]
       if (!row) {
         return { status: 404, headers: jsonHeaders, body: JSON.stringify({ error: 'Map not found' }) }
       }
@@ -152,12 +169,10 @@ export async function mapApiHandler(input: MapApiInput): Promise<MapApiResult> {
         return { status: 400, headers: jsonHeaders, body: JSON.stringify({ error: 'Invalid map payload' }) }
       }
       const bodyStr = JSON.stringify(parsed)
-      const updated = await sql`
-        UPDATE transit_maps
-        SET payload = ${bodyStr}::jsonb, updated_at = NOW()
-        WHERE id = ${mapId}
-        RETURNING id
-      `
+      const updated = (await sql.query(
+        'UPDATE transit_maps SET payload = $1::jsonb, updated_at = NOW() WHERE id = $2 RETURNING id',
+        [bodyStr, mapId],
+      )) as { id: string }[]
       const ok = updated.length > 0
       if (!ok) {
         return { status: 404, headers: jsonHeaders, body: JSON.stringify({ error: 'Map not found' }) }
@@ -167,6 +182,7 @@ export async function mapApiHandler(input: MapApiInput): Promise<MapApiResult> {
 
     return { status: 405, headers: jsonHeaders, body: JSON.stringify({ error: 'Method not allowed' }) }
   } catch (e: unknown) {
+    resetMapApiConnections()
     const msg = e instanceof Error ? e.message : 'Server error'
     return { status: 500, headers: jsonHeaders, body: JSON.stringify({ error: msg }) }
   }
