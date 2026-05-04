@@ -167,28 +167,45 @@ export function smoothSingleStationSegment(
   return sampleCubicBezier(p0, cp1, cp2, p1, Math.max(2, steps))
 }
 
-/** After a global smooth, nudge vertices that lie very near a station onto the exact stop coordinate. */
-export function snapPathVerticesToStations(path: LatLng[], stationPoints: LatLng[], maxDistDeg = 0.00012): LatLng[] {
-  if (path.length === 0 || stationPoints.length === 0) return path
-  const thr = maxDistDeg * maxDistDeg
-  return path.map((p) => {
-    for (const s of stationPoints) {
-      const dlat = p.lat - s.lat
-      const dlng = p.lng - s.lng
-      if (dlat * dlat + dlng * dlng <= thr) return { lat: s.lat, lng: s.lng }
-    }
-    return p
-  })
+/** Closest point on segment AB to q (planar lat/lng, fine for short segments). */
+function closestPointOnSegment(a: LatLng, b: LatLng, q: LatLng): LatLng {
+  const dx = b.lng - a.lng
+  const dy = b.lat - a.lat
+  const len2 = dx * dx + dy * dy
+  if (len2 === 0) return { ...a }
+  let t = ((q.lng - a.lng) * dx + (q.lat - a.lat) * dy) / len2
+  t = Math.max(0, Math.min(1, t))
+  return { lat: a.lat + t * dy, lng: a.lng + t * dx }
 }
+
+/** Closest point on a polyline (vertex chain) to q. */
+export function closestPointOnPolyline(path: LatLng[], q: LatLng): LatLng {
+  if (path.length === 0) return { ...q }
+  if (path.length === 1) return { ...path[0] }
+  let best = path[0]
+  let bestD = Infinity
+  for (let i = 0; i < path.length - 1; i++) {
+    const c = closestPointOnSegment(path[i], path[i + 1], q)
+    const d = (c.lat - q.lat) * (c.lat - q.lat) + (c.lng - q.lng) * (c.lng - q.lng)
+    if (d < bestD) {
+      bestD = d
+      best = c
+    }
+  }
+  return best
+}
+
+/** Tangent scale for station–station cubics inside {@link piecewiseQuadraticPathForLine} (must match handle placement). */
+export const PIECEWISE_INTER_LEG_TANGENT_K = 0.18
 
 /**
  * Build the displayed line path when the line has midpoint waypoints.
  * - Legs **with** a handle: quadratic A → handle → B (one deliberate bend; avoids Catmull S on A–W–B).
- * - Legs **without** a handle: same smooth cubic used between stations globally, so joints stay
- *   rounded instead of sharp polygonal jogs from straight chords.
+ * - Legs **without** a handle: Catmull-style cubic between stations (slightly damped tangents vs
+ *   the global smoother to reduce overshoot at sharp corners).
  *
- * A light Catmull pass on the joined polyline softens corners at stations; vertices near stops are
- * snapped back so the line still meets each station exactly.
+ * Do **not** run a second global smooth on the joined samples — that reintroduces S-shaped wiggles
+ * and pulls the path away from where midpoint handles are defined.
  */
 export function piecewiseQuadraticPathForLine(
   line: Line,
@@ -215,7 +232,7 @@ export function piecewiseQuadraticPathForLine(
     } else {
       const pPrev = i > 0 ? stationPositionById.get(ids[i - 1])?.position ?? null : null
       const pNext = i + 2 < n ? stationPositionById.get(ids[i + 2])?.position ?? null : null
-      seg = smoothSingleStationSegment(pPrev, posA, posB, pNext, steps)
+      seg = smoothSingleStationSegment(pPrev, posA, posB, pNext, steps, PIECEWISE_INTER_LEG_TANGENT_K)
     }
     if (result.length === 0) {
       result.push(...seg)
@@ -223,10 +240,5 @@ export function piecewiseQuadraticPathForLine(
       result.push(...seg.slice(1))
     }
   }
-  const stationPts = ids
-    .map((id) => stationPositionById.get(id)?.position)
-    .filter((p): p is LatLng => p != null)
-  const softSteps = Math.min(8, steps)
-  const softened = smoothCurveThroughPoints(result, softSteps)
-  return snapPathVerticesToStations(softened, stationPts)
+  return result
 }

@@ -23,7 +23,9 @@ import {
   defaultModeVisibility,
 } from './types'
 import {
+  closestPointOnPolyline,
   cubicStationSegmentMidpoint,
+  PIECEWISE_INTER_LEG_TANGENT_K,
   piecewiseQuadraticPathForLine,
   quadraticCurveMidpoint,
   smoothCurveThroughPoints,
@@ -1001,12 +1003,16 @@ export function TransitLayer({
       const wp = line.waypoints?.find((w) => w.afterStationId === afterId)
       let position: LatLng
       if (wp && posA && posB) {
-        /* Stored value is Bézier control; handle sits on the curve at t = 0.5. */
-        position = quadraticCurveMidpoint(posA, wp.position, posB)
+        /* Stored value is Bézier control; nominal handle at t = 0.5, snapped to rendered polyline. */
+        const nominal = quadraticCurveMidpoint(posA, wp.position, posB)
+        position = closestPointOnPolyline(curve, nominal)
       } else if (posA && posB) {
         const pPrev = s > 0 ? stationsById.get(line.stationIds[s - 1])?.position ?? null : null
         const pNext = s + 2 < n ? stationsById.get(line.stationIds[s + 2])?.position ?? null : null
-        position = cubicStationSegmentMidpoint(pPrev, posA, posB, pNext)
+        const kTangent =
+          (line.waypoints?.length ?? 0) > 0 ? PIECEWISE_INTER_LEG_TANGENT_K : 0.25
+        const nominal = cubicStationSegmentMidpoint(pPrev, posA, posB, pNext, kTangent)
+        position = closestPointOnPolyline(curve, nominal)
       } else {
         position = curve[Math.floor(curve.length / 2)] ?? curve[0]
       }
