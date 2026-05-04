@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import TransitMapView from './TransitMapView'
 import type { LatLng, FocusTarget, StationLabelOverride, TransitMode, ModeLabelStyle, ModeMarkerStyle } from './types'
@@ -33,6 +34,7 @@ import {
   type NominatimPlace,
 } from './transitGeocode'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
+import { allocateCloudMapAndUpload } from './cloudPersist'
 import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import { IconUndo, IconRedo, IconPan, IconStation, IconLine, IconEditLine } from './transitUiIcons'
 import './App.css'
@@ -305,6 +307,7 @@ export default function TransitApp({
   initialSavedMap = null,
   onNavigateHome,
 }: TransitAppProps = {}) {
+  const navigate = useNavigate()
   const [stations, setStations] = useState<Station[]>(() => {
     if (initialSavedMap && isValidSavedMap(initialSavedMap)) {
       syncIdCountersFromData(initialSavedMap.stations, initialSavedMap.lines)
@@ -1123,7 +1126,8 @@ export default function TransitApp({
         const isExtendFromEnd = !fromStart && afterStationId === lastStationId
         const isExtendFromStart = fromStart && afterStationId === firstStationId
         const isExtendDrop = isExtendFromEnd || isExtendFromStart
-        if (addInfillAtMidpoint || isExtendDrop) {
+        /* Midpoint handle drag: only extend-from-terminus adds a station; infill is segment-click only. */
+        if (isExtendDrop) {
           const newId = generateStationId()
           const newStation: Station = {
             id: newId,
@@ -1166,7 +1170,6 @@ export default function TransitApp({
       lines,
       stations,
       stationLabelOverrides,
-      addInfillAtMidpoint,
       distM,
       insertAfter,
       pushHistory,
@@ -1409,7 +1412,6 @@ export default function TransitApp({
 
   const [demoTourActive, setDemoTourActive] = useState(false)
   const [demoTourCaption, setDemoTourCaption] = useState('')
-  const [demoTourSubtext, setDemoTourSubtext] = useState('')
   const [demoTourCursor, setDemoTourCursor] = useState<{ x: number; y: number; visible: boolean }>({
     x: 0,
     y: 0,
@@ -1713,7 +1715,7 @@ export default function TransitApp({
   }, [labelStylesByMode, markerStylesByMode])
 
   const loadMapFromContent = useCallback(
-    (content: string, name: string, confirmBeforeRecovery = false): boolean => {
+    (content: string, name: string, confirmBeforeRecovery = false): false | SavedMap => {
       try {
         const data = JSON.parse(content)
         if (isValidSavedMap(data)) {
@@ -1726,7 +1728,7 @@ export default function TransitApp({
               return false
           }
           applyLoadedMap(data, name)
-          return true
+          return data
         }
         const recovered = tryRecoverSavedMap(data)
         if (recovered) {
@@ -1738,7 +1740,7 @@ export default function TransitApp({
           }
           applyLoadedMap(recovered, name)
           notify('Loaded with recovery. Some data may be missing.')
-          return true
+          return recovered
         }
         notify('Invalid map file. Could not load.', 'error')
         return false
@@ -1982,9 +1984,8 @@ export default function TransitApp({
       new Promise<void>((resolve) => {
         setTimeout(resolve, ms)
       })
-    const setCaption = (text: string, subtext = '') => {
+    const setCaption = (text: string, _subtext = '') => {
       setDemoTourCaption(text.replace(/—/g, '-'))
-      setDemoTourSubtext(subtext.replace(/—/g, '-'))
     }
     const waitForImportIdle = async () => {
       for (let i = 0; i < 600; i++) {
@@ -2580,7 +2581,7 @@ export default function TransitApp({
 
       await pointAt(
         demoInfillCheckboxRef.current,
-        'Optional: infill at midpoint adds a stop when you click a segment (or drag a midpoint handle).',
+        'Optional: infill adds a stop when you click a line segment.',
       )
       ctx().setAddInfillAtMidpoint(true)
       await sleep(z(820))
@@ -2791,7 +2792,6 @@ export default function TransitApp({
       setDemoTourHighlightRect(null)
       setDemoTourHighlightStrong(false)
       setDemoTourCaption('')
-      setDemoTourSubtext('')
       await sleep(z(200))
       setDemoTourEndCardOpen(true)
       return
@@ -2813,7 +2813,6 @@ export default function TransitApp({
           setDemoTourFadeOut(false)
           setDemoTourCursor((prev) => ({ ...prev, visible: false }))
           setDemoTourCaption('')
-          setDemoTourSubtext('')
           setDemoTourHighlightRect(null)
           setDemoTourHighlightStrong(false)
           setMode('pan')
@@ -2876,25 +2875,39 @@ export default function TransitApp({
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
+      const inputEl = e.target
       if (!file) return
       if (file.size > MAX_LOAD_FILE_BYTES) {
         notify(
           `File is too large (max ${MAX_LOAD_FILE_BYTES / 1024 / 1024} MB). Choose a smaller file or split your map.`,
           'error',
         )
-        e.target.value = ''
+        inputEl.value = ''
         return
       }
       const reader = new FileReader()
       reader.onload = () => {
-        const raw = reader.result as string
-        loadMapFromContent(raw, file.name, true)
-        e.target.value = ''
+        void (async () => {
+          const raw = reader.result as string
+          const map = loadMapFromContent(raw, file.name, true)
+          if (map === false) {
+            inputEl.value = ''
+            return
+          }
+          if (!cloudMapId) {
+            try {
+              const id = await allocateCloudMapAndUpload(map)
+              navigate(`/m/${id}`, { replace: true })
+            } catch (err) {
+              notify(err instanceof Error ? err.message : 'Could not save map to cloud', 'error')
+            }
+          }
+          inputEl.value = ''
+        })()
       }
       reader.readAsText(file)
-      e.target.value = ''
     },
-    [loadMapFromContent, notify],
+    [loadMapFromContent, notify, cloudMapId, navigate],
   )
 
   useEffect(() => {
@@ -3117,9 +3130,6 @@ export default function TransitApp({
                 )}
                 <div className="fileMenuDivider" />
                 <div className="fileMenuSubLabel">Import transit (OSM)</div>
-                <p className="fileMenuImportHint">
-                  May take up to ~2 minutes. Data comes from OpenStreetMap (similar to agency GTFS in many cities)—quality varies.
-                </p>
                 <div className="fileMenuImportRow">
                   <input
                     ref={demoImportInputRef}
@@ -3251,8 +3261,21 @@ export default function TransitApp({
                         role="menuitem"
                         title={r.name}
                         onClick={() => {
-                          loadMapFromContent(r.content, r.name)
-                          setFileMenuOpen(false)
+                          void (async () => {
+                            const map = loadMapFromContent(r.content, r.name)
+                            setFileMenuOpen(false)
+                            if (map !== false && !cloudMapId) {
+                              try {
+                                const id = await allocateCloudMapAndUpload(map)
+                                navigate(`/m/${id}`, { replace: true })
+                              } catch (err) {
+                                notify(
+                                  err instanceof Error ? err.message : 'Could not save map to cloud',
+                                  'error',
+                                )
+                              }
+                            }
+                          })()
                         }}
                       >
                         {r.name}
@@ -3261,9 +3284,6 @@ export default function TransitApp({
                   </>
                 )}
                 <div className="fileMenuDivider" />
-                <p className="fileMenuAuthorTagline" title="Author">
-                  made by Andre
-                </p>
               </div>
             )}
           </div>
@@ -3391,11 +3411,7 @@ export default function TransitApp({
                       </button>
                     </div>
                   </>
-                ) : (
-                  <p className="emptyHint" style={{ margin: '0 0 8px' }}>
-                    Turn on &quot;Show station names on map&quot; to edit default label font and size.
-                  </p>
-                )}
+                ) : null}
                 {showStationNamesOnMap &&
                   editingStationId &&
                   (() => {
@@ -3484,18 +3500,8 @@ export default function TransitApp({
                       </div>
                     )
                   })()}
-                {showStationNamesOnMap && !editingStationId && (
-                  <p className="emptyHint" style={{ margin: '8px 0 0', fontSize: 12 }}>
-                    Select a stop on a line card (Rename or Label) to adjust that stop’s placement here.
-                  </p>
-                )}
                 <div className="fileMenuDivider" />
                 <div className="fileMenuSubLabel">Labels &amp; markers by mode</div>
-                {!showStationNamesOnMap && (
-                  <p className="emptyHint" style={{ margin: '0 0 8px' }}>
-                    Turn on &quot;Show station names on map&quot; to edit per-mode label font and size.
-                  </p>
-                )}
                 <div className="modeVisualsColumns">
                 {TRANSIT_MODES.map((m) => (
                   <div key={m} className="modeVisualsBlock" onClick={(e) => e.stopPropagation()}>
@@ -3632,7 +3638,7 @@ export default function TransitApp({
                     checked={autoStationNames}
                     onChange={(e) => setAutoStationNames(e.target.checked)}
                   />
-                  Auto name stops (uses the map to fill in unnamed stops)
+                  Auto name stops
                 </label>
                 <label className="fileMenuCheck">
                   <input
@@ -3904,9 +3910,7 @@ export default function TransitApp({
                   {systemMapFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
                 </button>
               </div>
-              {lines.length === 0 ? (
-                <p className="emptyHint">No lines yet. Go back to edit to create a map.</p>
-              ) : (
+              {lines.length === 0 ? null : (
                 <>
                   {TRANSIT_MODES.map((mode) => {
                     const groupLines = linesByMode[mode]
@@ -4120,7 +4124,6 @@ export default function TransitApp({
                       Delete all
                     </button>
                   </div>
-                  <p className="orphanStationsHint">Stations not on any line</p>
                   <ul className="orphanStationList">
                     {validationWarnings.orphanStationIds.map((id) => {
                       const station = stations.find((s) => s.id === id)
@@ -4274,21 +4277,6 @@ export default function TransitApp({
 
               <section className="sidebarSection">
                 <h2 className="sidebarSectionTitle">Lines</h2>
-                {mode === 'line' && selectedLine && (
-                  <p className="drawLineHint">
-                    Click stations on the map to add them to{' '}
-                    <strong>{selectedLine.name}</strong>.
-                  </p>
-                )}
-                {mode === 'edit-line' && selectedLine && (
-                  <p className="drawLineHint">
-                    Drag stations to move. Drag the{' '}
-                    <strong>dots on the line</strong> to curve the line (no new
-                    station) or drop on an existing station to snap the line to
-                    it; drop on a station already on the line to remove it from
-                    the line.
-                  </p>
-                )}
                 {mode === 'edit-line' && selectedLine && (
                   <label className="mapDisplayOption">
                     <input
@@ -4300,19 +4288,7 @@ export default function TransitApp({
                     <span>Add infill station at segment midpoint</span>
                   </label>
                 )}
-                {mode === 'edit-line' && selectedLine && addInfillAtMidpoint && (
-                  <p className="drawLineHint" style={{ marginTop: 4 }}>
-                    Click a line segment to insert a new station at its
-                    midpoint, or <strong>drag a midpoint dot</strong> and drop
-                    to add an infill station there.
-                  </p>
-                )}
-                {lines.length === 0 ? (
-                  <p className="emptyHint">
-                    Create a line above, then use <strong>Draw line</strong> and
-                    click stations in order.
-                  </p>
-                ) : (
+                {lines.length === 0 ? null : (
                   <>
                     {TRANSIT_MODES.map((mode) => {
                       const groupLines = linesByMode[mode]
@@ -4886,10 +4862,6 @@ export default function TransitApp({
           <div className="importConflictModal" role="dialog" aria-labelledby="importConflictTitle">
             <header className="importConflictModalHeader">
               <h3 id="importConflictTitle">Similar routes found</h3>
-              <p className="importConflictHint">
-                These imports look like lines you already have. Unchecked rows will be <strong>skipped</strong>. Tick{' '}
-                <strong>Import anyway</strong> only if you want a second copy on the map.
-              </p>
             </header>
             <div className="importConflictListWrap">
               <ul className="importConflictList">
@@ -5012,8 +4984,6 @@ export default function TransitApp({
             <div className="demoTourCaptionWrap">
               <div className="demoTourCaptionInner">
                 <p className="demoTourCaptionText">{demoTourCaption}</p>
-                {demoTourSubtext && <p className="demoTourStepSubtext">{demoTourSubtext}</p>}
-                <p className="demoTourHint">Press Esc to end the tour.</p>
               </div>
             </div>
           </div>

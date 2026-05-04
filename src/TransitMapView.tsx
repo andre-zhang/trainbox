@@ -1124,11 +1124,7 @@ export function TransitLayer({
                 onLineMidpointDrop(selectedLine.id, mp.afterStationId, ll, mp.fromStart)
               },
             }}
-          >
-            <Popup>
-              <span style={{ fontSize: 12 }}>Drag to curve the line or drop on a station to snap</span>
-            </Popup>
-          </Marker>
+          />
           )
         })}
       {stations
@@ -1202,7 +1198,6 @@ export function TransitLayer({
                       }
                     }}
                   />
-                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>Drag to move</span>
                   {linesByStationId.get(station.id)?.length ? (
                     <div className="stationPopupLines">
                       {(linesByStationId.get(station.id) ?? []).map((line) => {

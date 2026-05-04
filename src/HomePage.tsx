@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { isValidSavedMap, type SavedMap } from './savedMapGuards'
+import { allocateCloudMapAndUpload } from './cloudPersist'
+import { isValidSavedMap, tryRecoverSavedMap, type SavedMap } from './savedMapGuards'
 import './HomePage.css'
 
 const MAX_LOAD_BYTES = 5 * 1024 * 1024
@@ -9,7 +10,7 @@ export default function HomePage() {
   const navigate = useNavigate()
   const fileRef = useRef<HTMLInputElement>(null)
   const [mapIdInput, setMapIdInput] = useState('')
-  const [busy, setBusy] = useState<'create' | null>(null)
+  const [busy, setBusy] = useState<'create' | 'upload' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const onCreateNew = async () => {
@@ -58,17 +59,33 @@ export default function HomePage() {
     }
     const reader = new FileReader()
     reader.onload = () => {
-      try {
-        const raw = reader.result as string
-        const data = JSON.parse(raw) as unknown
-        if (!isValidSavedMap(data)) {
-          setError('That file is not a valid Trainbox map JSON.')
-          return
+      void (async () => {
+        try {
+          const raw = reader.result as string
+          const parsed = JSON.parse(raw) as unknown
+          let map: SavedMap | null = isValidSavedMap(parsed) ? parsed : tryRecoverSavedMap(parsed)
+          if (!map) {
+            setError('That file is not a valid Trainbox map JSON.')
+            return
+          }
+          if (!isValidSavedMap(parsed)) {
+            if (
+              !window.confirm(
+                'File format is partial or older. Try to load what we can? Some data may be missing.',
+              )
+            ) {
+              return
+            }
+          }
+          setBusy('upload')
+          const id = await allocateCloudMapAndUpload(map)
+          navigate(`/m/${id}`)
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Could not read file or save to cloud.')
+        } finally {
+          setBusy(null)
         }
-        navigate('/local', { state: { savedMap: data as SavedMap } })
-      } catch {
-        setError('Could not read that file as JSON.')
-      }
+      })()
     }
     reader.readAsText(file)
   }
@@ -77,7 +94,6 @@ export default function HomePage() {
     <div className="homePage">
       <div className="homeCard">
         <h1 className="homeTitle">Trainbox</h1>
-        <p className="homeSubtitle">Transit map sandbox — choose how to start.</p>
 
         {error ? <div className="homeError">{error}</div> : null}
 
@@ -90,10 +106,9 @@ export default function HomePage() {
           >
             {busy === 'create' ? 'Creating…' : 'Create new map'}
           </button>
-          <p className="homeOptionHint">Starts a blank map, saves to the cloud, and opens a unique 4-digit link.</p>
 
-          <button type="button" className="homeOptionBtn" onClick={onPickJson}>
-            Load existing JSON
+          <button type="button" className="homeOptionBtn" disabled={busy !== null} onClick={onPickJson}>
+            {busy === 'upload' ? 'Uploading…' : 'Load existing JSON'}
           </button>
           <input
             ref={fileRef}
@@ -102,7 +117,6 @@ export default function HomePage() {
             className="homeHiddenInput"
             onChange={onFile}
           />
-          <p className="homeOptionHint">Same format as File → Save map. Opens in the editor locally (not cloud).</p>
 
           <form className="homeIdForm" onSubmit={onLoadById}>
             <label className="homeIdLabel" htmlFor="map-id-input">
@@ -114,7 +128,7 @@ export default function HomePage() {
                 className="homeIdInput"
                 inputMode="numeric"
                 maxLength={8}
-                placeholder="e.g. 4829"
+                placeholder="4829"
                 value={mapIdInput}
                 onChange={(ev) => setMapIdInput(ev.target.value)}
                 autoComplete="off"
@@ -123,7 +137,6 @@ export default function HomePage() {
                 Open
               </button>
             </div>
-            <p className="homeOptionHint">Use the four digits from your map URL (cloud map).</p>
           </form>
         </div>
       </div>
