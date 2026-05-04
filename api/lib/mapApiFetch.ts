@@ -1,4 +1,4 @@
-import { mapApiHandler } from './mapApiHandler'
+import { mapApiHandler } from './mapApiHandler.js'
 
 /** Shared Web Handler for `/api/map/*` routes. */
 export async function mapApiFetch(request: Request): Promise<Response> {

@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
-import { mapApiHandler } from '../api/lib/mapApiHandler'
+import { mapApiHandler } from '../api/lib/mapApiHandler.js'
 
 const PORT = Number(process.env.MAP_API_PORT || process.env.PORT || 8787)
 
