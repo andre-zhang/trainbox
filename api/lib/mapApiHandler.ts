@@ -1,4 +1,6 @@
-import { neon } from '@neondatabase/serverless'
+import type { NeonQueryFunction } from '@neondatabase/serverless'
+
+type Sql = NeonQueryFunction<false, false>
 
 const MAP_ID_RE = /^[0-9]{4}$/
 
@@ -17,15 +19,24 @@ function emptyPayloadString(): string {
 
 let schemaReady: Promise<void> | null = null
 
-function getSql() {
-  const url = process.env.DATABASE_URL
-  if (!url || typeof url !== 'string') {
-    throw new Error('DATABASE_URL is not set')
+/** Lazy-load Neon so the function module can load even if the driver fails to init in some runtimes. */
+let sqlSingleton: Promise<Sql> | null = null
+
+function getSql(): Promise<Sql> {
+  if (!sqlSingleton) {
+    sqlSingleton = (async () => {
+      const { neon } = await import('@neondatabase/serverless')
+      const url = process.env.DATABASE_URL
+      if (!url || typeof url !== 'string') {
+        throw new Error('DATABASE_URL is not set')
+      }
+      return neon(url)
+    })()
   }
-  return neon(url)
+  return sqlSingleton
 }
 
-function ensureSchema(sql: ReturnType<typeof getSql>): Promise<void> {
+function ensureSchema(sql: Sql): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       await sql`
@@ -48,7 +59,7 @@ function randomFourDigitId(): string {
   return String(Math.floor(Math.random() * 10000)).padStart(4, '0')
 }
 
-async function allocateMapId(sql: ReturnType<typeof getSql>): Promise<string> {
+async function allocateMapId(sql: Sql): Promise<string> {
   const empty = emptyPayloadString()
   for (let attempt = 0; attempt < 80; attempt++) {
     const id = randomFourDigitId()
@@ -95,7 +106,7 @@ export async function mapApiHandler(input: MapApiInput): Promise<MapApiResult> {
   const jsonHeaders = { 'Content-Type': 'application/json; charset=utf-8' }
 
   try {
-    const sql = getSql()
+    const sql = await getSql()
     await ensureSchema(sql)
 
     if (input.pathname === '/api/map/create') {
