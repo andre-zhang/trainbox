@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
-import type { CSSProperties, MutableRefObject } from 'react'
+import type { CSSProperties, MutableRefObject, SyntheticEvent } from 'react'
 import {
   MapContainer,
   TileLayer,
@@ -29,6 +29,12 @@ const CARTODB_TILES = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/
 const CARTODB_SIMPLIFIED_TILES = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
 const ATTRIBUTION =
   '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>'
+
+/** Popup content lives on the map pane; without this, control clicks can reach the map as a "click" and add a station. */
+function stopLeafletMapPointerLeak(e: SyntheticEvent) {
+  e.stopPropagation()
+  if ('nativeEvent' in e && e.nativeEvent) L.DomEvent.stopPropagation(e.nativeEvent)
+}
 
 const STATION_RADIUS_BASE_M = 70
 const STATION_ZOOM_REF = 12
@@ -1175,7 +1181,11 @@ export function TransitLayer({
                 demoTourActive={demoTourActive}
               />
               <Popup>
-                <div className="stationPopup">
+                <div
+                  className="stationPopup"
+                  onMouseDown={stopLeafletMapPointerLeak}
+                  onClick={stopLeafletMapPointerLeak}
+                >
                   <input
                     type="text"
                     className="stationPopupNameInput"
@@ -1336,7 +1346,11 @@ export function TransitLayer({
                 demoTourActive={demoTourActive}
               />
               <Popup>
-                <div className="stationPopup">
+                <div
+                  className="stationPopup"
+                  onMouseDown={stopLeafletMapPointerLeak}
+                  onClick={stopLeafletMapPointerLeak}
+                >
                   <input
                     type="text"
                     className="stationPopupNameInput"
