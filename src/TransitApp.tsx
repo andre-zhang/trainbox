@@ -337,6 +337,10 @@ export default function TransitApp({
   const [focusLocation, setFocusLocation] = useState<FocusTarget | null>(null)
   const fitAllNonceRef = useRef(0)
   const [systemMapView, setSystemMapView] = useState(false)
+  const [isMobileViewport, setIsMobileViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 768px)').matches : false,
+  )
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [systemMapSelectedLineId, setSystemMapSelectedLineId] = useState<string | null>(null)
   const [systemMapExpandedLineIds, setSystemMapExpandedLineIds] = useState<string[]>([])
   const [showStationNamesOnMap, setShowStationNamesOnMap] = useState(false)
@@ -363,6 +367,7 @@ export default function TransitApp({
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const [visualsMenuOpen, setVisualsMenuOpen] = useState(false)
   const [functionalMenuOpen, setFunctionalMenuOpen] = useState(false)
+  const effectiveSystemMapView = systemMapView || isMobileViewport
   const [importCityQuery, setImportCityQuery] = useState('')
   const [importLoading, setImportLoading] = useState(false)
   const [importStatusText, setImportStatusText] = useState('')
@@ -1502,7 +1507,7 @@ export default function TransitApp({
   }, [])
 
   useEffect(() => {
-    if (!systemMapView) {
+    if (!effectiveSystemMapView) {
       if (document.fullscreenElement) document.exitFullscreen?.()
       return
     }
@@ -1512,11 +1517,32 @@ export default function TransitApp({
     const onFullscreenChange = () => setSystemMapFullscreen(!!document.fullscreenElement)
     document.addEventListener('fullscreenchange', onFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
-  }, [systemMapView, systemMapFullscreen])
+  }, [effectiveSystemMapView, systemMapFullscreen])
 
   useEffect(() => {
-    if (!systemMapView) setSystemMapSidebarHidden(false)
-  }, [systemMapView])
+    if (!effectiveSystemMapView) setSystemMapSidebarHidden(false)
+  }, [effectiveSystemMapView])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const media = window.matchMedia('(max-width: 768px)')
+    const sync = () => setIsMobileViewport(media.matches)
+    sync()
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setMobileMenuOpen(false)
+      return
+    }
+    setSystemMapView(true)
+    setSystemMapSidebarHidden(true)
+    setFileMenuOpen(false)
+    setVisualsMenuOpen(false)
+    setFunctionalMenuOpen(false)
+  }, [isMobileViewport])
 
   const saveMapToFile = useCallback(() => {
     const data = {
@@ -3153,7 +3179,7 @@ export default function TransitApp({
           ) : null}
           {cloudSyncLabel ? <span className="appCloudSyncLabel">{cloudSyncLabel}</span> : null}
         </div>
-        <nav className="appHeaderMenubar" aria-label="Main">
+        {!isMobileViewport && <nav className="appHeaderMenubar" aria-label="Main">
           <div className="fileMenuWrap" ref={fileMenuRef}>
             <button
               type="button"
@@ -3805,10 +3831,10 @@ export default function TransitApp({
               </div>
             )}
           </div>
-        </nav>
+        </nav>}
 
         <div className="appHeaderActions">
-          {!systemMapView && (
+          {!isMobileViewport && !effectiveSystemMapView && (
             <>
               <button
                 ref={demoUndoRef}
@@ -3835,7 +3861,18 @@ export default function TransitApp({
             style={{ display: 'none' }}
             aria-hidden
           />
-          {systemMapView ? (
+          {isMobileViewport ? (
+            <button
+              type="button"
+              className="toolBtn mobileMenuToggleBtn"
+              aria-label="System map options"
+              aria-expanded={mobileMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => setMobileMenuOpen((v) => !v)}
+            >
+              ☰
+            </button>
+          ) : effectiveSystemMapView ? (
             <button
               ref={demoBackEditRef}
               type="button"
@@ -3935,8 +3972,36 @@ export default function TransitApp({
         </div>
       )}
 
+      {isMobileViewport && mobileMenuOpen ? (
+        <div className="mobileMenuPanel" role="menu">
+          <label className="mapDisplayOption">
+            <input
+              type="checkbox"
+              checked={systemMapNightTheme}
+              onChange={(e) => setSystemMapNightTheme(e.target.checked)}
+            />
+            <span>Night / high-contrast</span>
+          </label>
+          <label className="mapDisplayOption">
+            <input
+              type="checkbox"
+              checked={showStationNamesOnMap}
+              onChange={(e) => setShowStationNamesOnMap(e.target.checked)}
+            />
+            <span>Station labels</span>
+          </label>
+          <button
+            type="button"
+            className="toolBtn"
+            onClick={() => setSystemMapSidebarHidden((v) => !v)}
+          >
+            {systemMapSidebarHidden ? 'Show lines list' : 'Hide lines list'}
+          </button>
+        </div>
+      ) : null}
+
       <div className="appBody">
-        {systemMapView ? (
+        {effectiveSystemMapView ? (
           <div
             className={`systemMapContainer ${
               systemMapNightTheme ? 'systemMapNight' : ''
@@ -4156,7 +4221,7 @@ export default function TransitApp({
                 markerStylesByMode={markerStylesByMode}
                 onStationRename={() => {}}
               />
-              {systemMapSidebarHidden ? (
+              {systemMapSidebarHidden && !isMobileViewport ? (
                 <button
                   type="button"
                   className="systemMapShowLinesPanelFab"

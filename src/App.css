@@ -794,6 +794,22 @@
   margin-left: auto;
 }
 
+.mobileMenuToggleBtn {
+  min-width: 42px;
+  padding: 8px 12px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.mobileMenuPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
 .legacyHeaderSummary {
   display: flex;
   align-items: center;
