@@ -1343,6 +1343,11 @@ export default function TransitApp({
   const linesByMode = useMemo(() => {
     const m = emptyLinesByMode()
     for (const line of lines) m[getLineMode(line)].push(line)
+    for (const mode of TRANSIT_MODES) {
+      m[mode].sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base', numeric: true }),
+      )
+    }
     return m
   }, [lines])
 
