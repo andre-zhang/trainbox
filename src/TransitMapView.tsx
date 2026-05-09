@@ -47,6 +47,17 @@ const STATION_RADIUS_BASE_M = 70
 const STATION_ZOOM_REF = 12
 const STATION_ZOOM_SCALE = 0.4
 
+/** Small geodesic distance (m) for deduping edit handles that would stack on the map. */
+function approxDistanceM(a: LatLng, b: LatLng): number {
+  const R = 6371000
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180
+  const lat1 = (a.lat * Math.PI) / 180
+  const lat2 = (b.lat * Math.PI) / 180
+  const x = dLng * Math.cos((lat1 + lat2) * 0.5)
+  return Math.hypot(R * dLat, R * x)
+}
+
 const LINE_WEIGHT_BASE = 3
 const LINE_ZOOM_SCALE = 0.3
 
@@ -1071,7 +1082,37 @@ export function TransitLayer({
       }
       midpoints.push({ position: handlePos, afterStationId: firstId, segmentIndex: -1, fromStart: true })
     }
-    return midpoints
+
+    /* Last-segment bend handle + end-extend handle often land on top of each other → double blue dots.
+       Drop the interior bend dot when it is too close to a terminus extend handle (same at line start). */
+    const MIN_SEP_BEND_FROM_EXTEND_M = 22
+    const extendEndMp = midpoints.find(
+      (m) => !m.fromStart && m.afterStationId === lastId && m.segmentIndex === n - 1,
+    )
+    const extendStartMp = midpoints.find((m) => m.fromStart && m.afterStationId === firstId)
+    const thinned = midpoints.filter((m) => {
+      if (!m.fromStart && m.segmentIndex === n - 2 && extendEndMp) {
+        if (approxDistanceM(m.position, extendEndMp.position) < MIN_SEP_BEND_FROM_EXTEND_M) return false
+      }
+      if (!m.fromStart && m.segmentIndex === 0 && extendStartMp) {
+        if (approxDistanceM(m.position, extendStartMp.position) < MIN_SEP_BEND_FROM_EXTEND_M) return false
+      }
+      return true
+    })
+
+    const DUP_STACK_M = 2.5
+    const handleRank = (x: (typeof midpoints)[0]) => {
+      if (x.fromStart) return 3
+      if (x.afterStationId === lastId && x.segmentIndex === n - 1) return 2
+      return 1
+    }
+    const out: typeof midpoints = []
+    for (const m of thinned) {
+      const j = out.findIndex((o) => approxDistanceM(o.position, m.position) < DUP_STACK_M)
+      if (j === -1) out.push(m)
+      else if (handleRank(m) > handleRank(out[j]!)) out[j] = m
+    }
+    return out
   }, [editLineMode, selectedLineId, selectedLine, linePositions, lines, stationsById])
 
   return (
@@ -1122,7 +1163,7 @@ export function TransitLayer({
           const isExtendEnd = mp.afterStationId === lastSid && !mp.fromStart
           return (
           <Marker
-            key={`mid-${selectedLine.id}-${mp.segmentIndex}`}
+            key={`mid-${selectedLine.id}-${mp.segmentIndex}-${mp.afterStationId}-${mp.fromStart ? '1' : '0'}`}
             position={[mp.position.lat, mp.position.lng]}
             icon={isExtendEnd ? lineMidpointIconExtendEnd : lineMidpointIconNormal}
             pane="midpointHandlesPane"
