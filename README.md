@@ -2,53 +2,54 @@
 
 ## Inspiration
 
-I have liked transit maps since I was a kid and used to draw them on paper. Later I tried a bunch of digital tools (Metro Map Maker, Google Maps, Canva, and others). Most were either too rigid, too loose, or not really built around a real map and fine control over how the network looks.
+I've always been into transit maps. As a kid I'd draw them on paper. Later I tried a bunch of apps (Metro Map Maker, Google Maps, Canva, whatever). A lot of them felt too stiff, too vague, or just not really about drawing a real network on a real map with the look you want.
 
-Trainbox is the tool I wanted: a real basemap, enough structure to feel like a transit diagram, and enough control over visuals and geometry that it still feels like yours.
+Trainbox is basically the thing I wished existed: real basemap, diagram-ish workflow, and enough knobs on visuals and geometry that it still feels like your map.
 
 ## What it does
 
-- Draw transit lines on a geographic basemap (Leaflet with CartoDB tiles, plus an optional lighter simplified tile layer).
-- Import an existing network from OpenStreetMap through Overpass: metro, light rail, bus, regional rail, and national rail.
-- Edit, extend, or draw new lines on top of an import or from a blank map.
-- Optional auto naming for new stops via Nominatim reverse geocoding (roads and neighbourhoods near the drop point).
-- Visual settings per mode: line colour, weight, solid vs dashed, label font, marker fill and scale.
-- Five modes (metro, light rail, bus, regional rail, national rail), each with its own defaults.
-- Express stops, planned or under construction styling, and show or hide lines by mode.
-- System map view: read only, optional night theme, fullscreen.
-- JSON save and load, draft autosave in `localStorage`, and a short list of recent files.
-- Optional cloud maps: short ids in the URL, with a small API backed by Neon Postgres when deployed.
+- Draw lines on a real map (Leaflet + CartoDB tiles, optional lighter tile layer).
+- Pull in a city from OpenStreetMap via Overpass (metro, light rail, bus, regional, national rail).
+- Edit, extend, or start from scratch on top of that or on an empty map.
+- Optional auto names for new stops (Nominatim reverse geocode near the pin).
+- Per mode visuals: colour, weight, dashed vs solid, labels, markers.
+- Five modes with their own defaults, plus express, planned styling, hide by mode.
+- System map mode (read only, night theme, fullscreen).
+- JSON in and out, drafts in `localStorage`, recent files list.
+- Hosted maps if you want: short id in the URL, tiny API + Neon when you deploy it.
 
 ## Tech stack
 
-The UI is **React 18** and **TypeScript**, bundled with **Vite**. Routing uses **React Router**. The map is **Leaflet** through **react-leaflet**; tiles come from CartoDB. Curve smoothing and midpoint editing logic live in plain TypeScript helpers (Bezier style curves, snapping to polylines, etc.), not in a separate GIS engine.
-
-Imports talk to public OSM services: **Overpass** for route data and **Nominatim** for search and reverse geocoding, with throttling and client side cleanup so results are easier to use.
-
-Persistence for hosted maps uses **Neon** (Postgres) and the **`@neondatabase/serverless`** driver over HTTP. In production, map CRUD runs as **Vercel** serverless functions under `api/`. Local development runs **Vite** and a small **Node** HTTP shim (`tsx` + `server/map-api.ts`) so `/api` matches production behaviour behind the Vite proxy.
-
-**Three.js** is in the dependency tree for experiments or secondary views; the core editor is still mostly Leaflet and DOM.
-
-Linting is **ESLint** with the TypeScript and React hooks plugins.
+- React 18 + TypeScript
+- Vite for dev and build
+- React Router for pages
+- Leaflet + react-leaflet, CartoDB basemaps
+- Curve / midpoint stuff in plain TS helpers (not a full GIS stack)
+- Overpass + Nominatim from the browser (throttled, cleaned up a bit on import)
+- Neon Postgres + `@neondatabase/serverless` for cloud saves
+- Vercel serverless `api/` routes in prod
+- Local: Vite + small Node server (`tsx`, `server/map-api.ts`) behind the Vite proxy so `/api` feels like prod
+- Three.js is in the repo (side experiments); the editor is mostly Leaflet + DOM
+- ESLint + TS + react-hooks
 
 ## Challenges
 
 ### Curves
 
-Straight station to station segments looked wrong on a real map. The app smooths paths and adds draggable midpoint handles so you can bend a leg without moving the endpoints. Small details (extend vs bend, snapping, zoom) took more iteration than the feature list suggests.
+Straight segments looked cheap on a real map. Smoothing plus draggable midpoints so you can bend a leg without nudging the endpoints sounds easy; the edge cases (extend vs bend, snap, zoom) were not.
 
 ### OSM cleanup
 
-Imported data is noisy: generic names, duplicate relations, split stops that should read as one. The import path normalises and merges where it can so you spend less time fixing obvious issues by hand.
+Imports are messy: junk names, doubled routes, nodes that should be one stop. There's a bunch of normalisation so you're not fixing the same boring stuff every time.
 
 ### Different cities
 
-Bounding boxes, density, and Overpass load vary a lot. The same import flow has to stay usable for large metros and smaller systems without timing out or returning unusable geometry.
+BBox size, density, and how hard you hit Overpass all change. Same flow has to work for a huge metro and a small system without falling over.
 
 ### Zoom and density
 
-Dot size, line weight, and label sizing react to zoom. If labels would overlap badly, the map backs off and hides them instead of stacking unreadable text.
+Dots, lines, and labels scale with zoom. If labels would turn into soup, the map bails and hides them instead of pretending it's readable.
 
-### Station labels (in progress)
+### Station labels (wip)
 
-Placement and collision avoidance relative to lines and neighbours is the hardest part of the UI. There is a placement and overlap pass under the hood; it works in many cases but is still being improved.
+Getting labels to sit nicely next to lines and other stops is the hardest UI bit. There's placement and overlap logic; it's better than nothing but still a work in progress.
