@@ -2,39 +2,53 @@
 
 ## Inspiration
 
-Growing up, I was obsessed with transit maps. Even as a kid, I would draw them on paper. As I grew older, I tried every digital tool I could find: Metro Map Maker, Google Maps, Canva, the list goes on. None of them felt right. Too rigid, or too freeform, or just missing the thing that made it feel like a real map.
+I have liked transit maps since I was a kid and used to draw them on paper. Later I tried a bunch of digital tools (Metro Map Maker, Google Maps, Canva, and others). Most were either too rigid, too loose, or not really built around a real map and fine control over how the network looks.
 
-I wanted something that let me build transit maps the way I actually imagined them: on a real city, with real control over how things look. None of the existing tools let me do that. Hence, Trainbox.
+Trainbox is the tool I wanted: a real basemap, enough structure to feel like a transit diagram, and enough control over visuals and geometry that it still feels like yours.
 
----
+## What it does
 
-## What It Does
+- Draw transit lines on a geographic basemap (Leaflet with CartoDB tiles, plus an optional lighter simplified tile layer).
+- Import an existing network from OpenStreetMap through Overpass: metro, light rail, bus, regional rail, and national rail.
+- Edit, extend, or draw new lines on top of an import or from a blank map.
+- Optional auto naming for new stops via Nominatim reverse geocoding (roads and neighbourhoods near the drop point).
+- Visual settings per mode: line colour, weight, solid vs dashed, label font, marker fill and scale.
+- Five modes (metro, light rail, bus, regional rail, national rail), each with its own defaults.
+- Express stops, planned or under construction styling, and show or hide lines by mode.
+- System map view: read only, optional night theme, fullscreen.
+- JSON save and load, draft autosave in `localStorage`, and a short list of recent files.
+- Optional cloud maps: short ids in the URL, with a small API backed by Neon Postgres when deployed.
 
-- **Draw transit lines on a real geographic basemap** — Leaflet with CartoDB tiles, with a lighter simplified tile option if you want less visual noise
-- **Import any city's existing network from OpenStreetMap** via the Overpass API: metro, light rail, bus, regional, and national rail all supported
-- **Edit, extend, or build entirely new lines** on top of whatever you imported, or from scratch
-- **Auto station naming via Nominatim reverse geocoding** — drop a stop, it queries nearby roads and neighbourhoods and fills in a name
-- **Full visual control per mode** — line color, stroke weight, solid vs. dashed, label font, marker fill and scale
-- **Five distinct transit modes** (metro, light rail, bus, regional, national) each with their own visual settings
-- **Express service designation**, planned/under construction flags, show/hide by mode
-- **System map view** — read-only diagram mode with night theme and fullscreen
-- **JSON save/load**, draft autosave to localStorage, recent files
+## Tech stack
 
----
+The UI is **React 18** and **TypeScript**, bundled with **Vite**. Routing uses **React Router**. The map is **Leaflet** through **react-leaflet**; tiles come from CartoDB. Curve smoothing and midpoint editing logic live in plain TypeScript helpers (Bezier style curves, snapping to polylines, etc.), not in a separate GIS engine.
+
+Imports talk to public OSM services: **Overpass** for route data and **Nominatim** for search and reverse geocoding, with throttling and client side cleanup so results are easier to use.
+
+Persistence for hosted maps uses **Neon** (Postgres) and the **`@neondatabase/serverless`** driver over HTTP. In production, map CRUD runs as **Vercel** serverless functions under `api/`. Local development runs **Vite** and a small **Node** HTTP shim (`tsx` + `server/map-api.ts`) so `/api` matches production behaviour behind the Vite proxy.
+
+**Three.js** is in the dependency tree for experiments or secondary views; the core editor is still mostly Leaflet and DOM.
+
+Linting is **ESLint** with the TypeScript and React hooks plugins.
 
 ## Challenges
 
-### Getting the curves right
-Harsh polylines looked terrible. Getting lines to arc naturally between stations meant implementing Bezier smoothing from scratch. Midpoint handles let you manually bend a segment without touching the stations on either end, which sounds simple but took a while to get feeling right.
+### Curves
 
-### Cleaning up OSM data
-Real transit data from OpenStreetMap is a mess. Generic stop names like "Stop", duplicate routes for inbound and outbound directions, stops that are technically two separate nodes but should be one. The import pipeline does a lot of quiet cleanup work to make imports actually usable.
+Straight station to station segments looked wrong on a real map. The app smooths paths and adds draggable midpoint handles so you can bend a leg without moving the endpoints. Small details (extend vs bend, snapping, zoom) took more iteration than the feature list suggests.
 
-### Making it work worldwide
-Every city has a different bounding box, different data density, different API load. A lot of edge cases to handle to make sure an import in Tokyo works the same way as one in Toronto.
+### OSM cleanup
 
-### Rendering at every zoom level
-Station dots, line weights, and label sizes all scale with zoom. When there are too many labels on screen at once, the app hides them rather than letting everything overlap into an unreadable mess.
+Imported data is noisy: generic names, duplicate relations, split stops that should read as one. The import path normalises and merges where it can so you spend less time fixing obvious issues by hand.
 
-### Station name labels *(in progress)*
-Honestly the hardest part of the whole project. Getting labels to sit in an intuitive position relative to their station — instead of overlapping the line or covering adjacent stops, and being readable at every zoom — is way harder than it sounds. There is a full collision detection and placement system under the hood, and it is still not perfect. Active work in progress.
+### Different cities
+
+Bounding boxes, density, and Overpass load vary a lot. The same import flow has to stay usable for large metros and smaller systems without timing out or returning unusable geometry.
+
+### Zoom and density
+
+Dot size, line weight, and label sizing react to zoom. If labels would overlap badly, the map backs off and hides them instead of stacking unreadable text.
+
+### Station labels (in progress)
+
+Placement and collision avoidance relative to lines and neighbours is the hardest part of the UI. There is a placement and overlap pass under the hood; it works in many cases but is still being improved.
