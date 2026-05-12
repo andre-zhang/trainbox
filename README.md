@@ -1,4 +1,4 @@
-**__TRY IT__**: [https://trainbox-kappa.vercel.app/](https://trainbox-kappa.vercel.app/)
+***__TRY IT__***: [https://trainbox-kappa.vercel.app/](https://trainbox-kappa.vercel.app/)
 
 # Trainbox
 
