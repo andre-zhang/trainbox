@@ -1,6 +1,6 @@
-***__TRY IT__***: [https://trainbox-kappa.vercel.app/](https://trainbox-kappa.vercel.app/)
-
 # Trainbox
+
+***__TRY IT__***: [https://trainbox-kappa.vercel.app/](https://trainbox-kappa.vercel.app/)
 
 ## Inspiration
 
