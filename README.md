@@ -2,9 +2,9 @@
 
 ## Inspiration
 
-I've always been into transit maps. As a kid I'd draw them on paper. Later I tried a bunch of apps (Metro Map Maker, Google Maps, Canva, whatever). A lot of them felt too stiff, too vague, or just not really about drawing a real network on a real map with the look you want.
+I've always been into transit maps. As a kid I'd draw them on paper. Later I tried a bunch of apps (Metro Map Maker, Google Maps, Canva, whatever). They all felt too stiff and just not really about drawing a real network on a real map with the look you want.
 
-Trainbox is basically the thing I wished existed: real basemap, diagram-ish workflow, and enough knobs on visuals and geometry that it still feels like your map.
+Trainbox is the thing I wished existed: real basemap, diagram-ish workflow, and enough knobs on visuals and geometry that it feels like your map.
 
 ## What it does
 
@@ -15,8 +15,7 @@ Trainbox is basically the thing I wished existed: real basemap, diagram-ish work
 - Per mode visuals: colour, weight, dashed vs solid, labels, markers.
 - Five modes with their own defaults, plus express, planned styling, hide by mode.
 - System map mode (read only, night theme, fullscreen).
-- JSON in and out, drafts in `localStorage`, recent files list.
-- Hosted maps if you want: short id in the URL, tiny API + Neon when you deploy it.
+- JSON in and out, drafts in `localStorage`, recent files list, or hosted maps if you want
 
 ## Tech stack
 
@@ -28,7 +27,6 @@ Trainbox is basically the thing I wished existed: real basemap, diagram-ish work
 - Overpass + Nominatim from the browser (throttled, cleaned up a bit on import)
 - Neon Postgres + `@neondatabase/serverless` for cloud saves
 - Vercel serverless `api/` routes in prod
-- Local: Vite + small Node server (`tsx`, `server/map-api.ts`) behind the Vite proxy so `/api` feels like prod
 - Three.js is in the repo (side experiments); the editor is mostly Leaflet + DOM
 - ESLint + TS + react-hooks
 
@@ -40,7 +38,7 @@ Straight segments looked cheap on a real map. Smoothing plus draggable midpoints
 
 ### OSM cleanup
 
-Imports are messy: junk names, doubled routes, nodes that should be one stop. There's a bunch of normalisation so you're not fixing the same boring stuff every time.
+Imports are messy: junk names, doubled routes, nodes that should be one stop, messy GTFS. There's a bunch of normalisation so you're not fixing the same boring stuff every time.
 
 ### Different cities
 
