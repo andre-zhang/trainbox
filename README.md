@@ -8,17 +8,17 @@ I drew fake transit maps as a kid and never really stopped wanting a proper edit
 
 ## What it does
 
-From the home screen you can start a blank map, load a JSON file you already have, or open one you saved online using a short numeric code. If you prefer not to use cloud saves at all, there is a path that keeps the session in the browser only.
-
-While you edit, you switch between a few tools: move the map, drop stations, string stations into a line in order, or enter line edit mode where you drag stops and use the blue handles to bend a segment or extend the route from an end. There is an optional mode where adding a stop in the middle of a segment works differently (segment click vs handle drag), so you can pick the behaviour you want. Lines remember their own colour, thickness, dashed or solid style, and which of the five transit modes they belong to. You can mark some stops as express-only on a line, flag a line as planned, and show or hide whole mode groups on the map.
-
-Curves are smoothed along the line so it does not look like a ruler diagram; you can still nudge the path with handles without moving every station. Undo and redo cover recent edits, and on very large maps the app keeps a shorter history so the tab stays responsive. The sidebar groups lines by mode (with names sorted inside each group) and surfaces simple sanity checks: stops that are not on any line, lines with no stops yet, duplicate stop names, and lines that point at a missing stop.
-
-You can pull a city’s transit network in from OpenStreetMap: pick the area, choose which modes to include, and import. If you already have a map and import again, you may get a review screen when an incoming route looks too close to something you already drew, so you can merge or skip per row instead of silently overwriting.
-
-For viewing only, switch to system map mode: same network, no editing chrome, optional night colours and fullscreen. On a phone-sized screen the app stays in that read-only view and hides the full editor behind a small menu so the map stays usable.
-
-Saving is a JSON document you can file away or send to someone; the app also keeps a draft in the browser and a short list of recent files. If you use online maps, edits autosave to that copy while you work. New stops can optionally pick up a suggested name from what is around them on the map. There is also a short guided tour if you want a walkthrough the first time.
+- Start from the home screen: new blank map, load a JSON file you already have, or open a map you saved online with a short numeric code. If you do not want cloud saves, you can keep the whole session in the browser only.
+- Editing uses a small set of tools: pan the map, place stations, connect stations into a line in order, or line-edit mode where you drag stops and use the blue handles to bend a segment or extend from an end.
+- Optional behaviour for adding a stop mid-line: you can drive it from segment clicks vs handle drags depending on a toggle, so infill and reshaping do not fight each other.
+- Each line keeps its own colour, thickness, dashed or solid style, and one of five transit modes (metro, light rail, bus, regional rail, national rail). You can mark express-only stops on a line, mark a line as planned, and show or hide whole mode groups on the map.
+- Lines are drawn as smooth curves rather than straight station-to-station segments; you can still adjust the path with handles without nudging every stop.
+- Undo and redo cover recent work; on very large maps the history is shorter so the tab stays responsive.
+- The sidebar groups lines by mode (names sorted within each group) and flags simple issues: stops not on any line, empty lines, duplicate stop names, and lines that reference a missing stop.
+- Import a city’s network from OpenStreetMap: pick the area, choose which modes to pull in, then merge into your map. Re-importing can open a review step when a new route looks too close to something you already drew, so you merge or skip per row instead of overwriting blindly.
+- System map mode is read-only: same network, less chrome, optional night theme and fullscreen. On a phone-sized screen the app stays in that view and puts a few controls in a small menu so the map stays usable without the full editor layout.
+- Save and share as JSON; the app also keeps a draft in the browser and a short recent-files list. Online maps autosave while you edit.
+- New stops can optionally get a suggested name from nearby map context. A short guided tour is there if you want a first-time walkthrough.
 
 ## Tech stack
 
