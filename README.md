@@ -4,70 +4,51 @@
 
 ## Inspiration
 
-I drew fake transit maps as a kid and kept looking for a serious editor as an adult. Most tools were either pure diagramming with no geography, or generic map drawing with no transit workflow. Trainbox sits in the middle: real coordinates and basemap, plus line lists, modes, and styling that match how you think about a network.
+I drew fake transit maps as a kid and never really stopped wanting a proper editor for it. The tools I tried over the years usually sat at one extreme or the other: either a schematic canvas with no real geography, or a generic map where transit felt like an afterthought. Trainbox is meant to sit between those: you work on a real basemap and real coordinates, but the workflow still feels like building a network (lines, modes, how it reads on the page) rather than doodling shapes.
 
 ## What it does
 
-Single page app with routes `/` (home), `/m/:mapId` (cloud map by 4 digit id), and `/local` (editor without cloud).
+From the home screen you can start a blank map, load a JSON file you already have, or open one you saved online using a short numeric code. If you prefer not to use cloud saves at all, there is a path that keeps the session in the browser only.
 
-**Editing**
+While you edit, you switch between a few tools: move the map, drop stations, string stations into a line in order, or enter line edit mode where you drag stops and use the blue handles to bend a segment or extend the route from an end. There is an optional mode where adding a stop in the middle of a segment works differently (segment click vs handle drag), so you can pick the behaviour you want. Lines remember their own colour, thickness, dashed or solid style, and which of the five transit modes they belong to. You can mark some stops as express-only on a line, flag a line as planned, and show or hide whole mode groups on the map.
 
-- Map tools: pan, place stations, connect stations into a line in order, and edit line mode (drag stops, drag midpoint handles to bend segments or extend from ends, optional segment click to infill when that flag is on).
-- Per line: colour, weight, dash pattern, mode tag (metro, light rail, bus, regional rail, national rail), optional express subset of stops, planned styling.
-- Optional Bézier style waypoints stored per segment; render path switches between smooth polylines through stops only vs piecewise quadratic when waypoints exist.
-- Undo and redo with a bounded stack; depth shrinks on very large maps so memory stays predictable.
-- Sidebar validation for orphans, empty lines, duplicate stop names, and lines referencing missing stop ids, plus grouped line list by mode (sorted by name within each group).
+Curves are smoothed along the line so it does not look like a ruler diagram; you can still nudge the path with handles without moving every station. Undo and redo cover recent edits, and on very large maps the app keeps a shorter history so the tab stays responsive. The sidebar groups lines by mode (with names sorted inside each group) and surfaces simple sanity checks: stops that are not on any line, lines with no stops yet, duplicate stop names, and lines that point at a missing stop.
 
-**Data in and out**
+You can pull a city’s transit network in from OpenStreetMap: pick the area, choose which modes to include, and import. If you already have a map and import again, you may get a review screen when an incoming route looks too close to something you already drew, so you can merge or skip per row instead of silently overwriting.
 
-- Save and load JSON; tolerant parsing for older export shapes when you upload.
-- Draft autosave in `localStorage` and a small recent files list.
-- Optional hosted maps: POST allocates an id, client PUTs the map JSON, debounced autosave while you edit.
+For viewing only, switch to system map mode: same network, no editing chrome, optional night colours and fullscreen. On a phone-sized screen the app stays in that read-only view and hides the full editor behind a small menu so the map stays usable.
 
-**Import**
-
-- Overpass driven import for a chosen bbox or place; filters by transit mode flags you set before running.
-- Merge into an existing map can surface a conflict modal (similar or duplicate geometry vs existing lines) with per row overrides before commit.
-
-**Viewing**
-
-- System map view: same geometry, read only UI, optional night palette and fullscreen. On narrow viewports the app stays in that view and tucks a few toggles behind a compact menu so touch layout does not run the full editor chrome.
-
-**Other**
-
-- Optional reverse geocode naming for new stops (Nominatim, rate limited on the client). Some cleanup reads `gtfs:*` style tags when mappers mirrored feed data onto OSM nodes; there is no separate GTFS file import.
-- Guided demo tour for onboarding (optional, lives in the editor bundle).
+Saving is a JSON document you can file away or send to someone; the app also keeps a draft in the browser and a short list of recent files. If you use online maps, edits autosave to that copy while you work. New stops can optionally pick up a suggested name from what is around them on the map. There is also a short guided tour if you want a walkthrough the first time.
 
 ## Tech stack
 
 - React 18, TypeScript, Vite
-- React Router (`/`, `/m/:mapId`, `/local`)
+- React Router: `/`, `/m/:mapId`, `/local`
 - Leaflet + react-leaflet, CartoDB raster tiles (default and simplified variant)
-- Curve and intersection math in `src/utils/curve.ts` (Catmull style smoothing, quadratic legs, closest point on polyline)
-- Overpass + Nominatim from the browser; import and merge logic in `src/transitOsmImport.ts`
-- Cloud API: Vercel functions under `api/`, Neon Postgres via `@neondatabase/serverless`
-- Local dev: Vite proxy to `server/map-api.ts` (tsx) so `/api` matches production behaviour
-- Three.js is a dependency for experiments; the shipped editor is Leaflet and DOM
+- Curve and intersection math in `src/utils/curve.ts` (Catmull style smoothing, quadratic legs when waypoints exist, closest point on polyline for handle placement)
+- Overpass + Nominatim from the browser; import and merge in `src/transitOsmImport.ts` (chunked conflict detection, normalisation including noisy names and `gtfs:*` tags on OSM nodes where present; no separate GTFS file ingest)
+- Cloud map CRUD: Vercel serverless `api/`, Neon Postgres via `@neondatabase/serverless`
+- Three.js in the dependency tree for experiments; production editor is Leaflet + DOM
 - ESLint, TypeScript strict, react-hooks rules
 
 ## Challenges (implementation)
 
 **Curve geometry and edit handles**
 
-Rendering uses dense sampled polylines so lines look smooth at city scale. Edit handles must sit on that geometry, not only on straight chords between stops. Midpoint markers snap to the polyline, waypoints store implicit quadratic controls, and one drag handler has to distinguish extend from terminus, bend only, and infill when enabled. Short final segments can stack handles; we dedupe when two handles would land on top of each other.
+Rendering relies on dense sampled polylines so lines read well at city scale, which means edit handles have to snap to the rendered path, not just to straight chords between stations. Waypoints store implicit quadratic controls, the smooth path switches between a single Catmull style chain and piecewise quadratics when those controls exist, and one drag end handler has to tell extend-from-terminus apart from bend-only and from optional infill. When the last segment is very short, two handles can end up on top of each other, so there is an explicit dedupe pass.
 
 **OSM import and merge**
 
-Overpass returns noisy relations and duplicate variants of the same service. The pipeline filters routes, normalises stop geometry and naming (including noisy or placeholder names and occasional `gtfs:*` tags on nodes), and merges into live state. Conflict detection runs in chunks so the UI stays responsive on big imports; resolving conflicts is a second step with explicit user choices instead of silent data loss.
+Overpass output is noisy: duplicate relations, variants of the same service, placeholder names. The importer filters and normalises before merge, then runs conflict detection in chunks so large cities do not freeze the UI; the modal path is deliberate so users resolve ambiguity instead of the app guessing.
 
 **Leaflet inside React**
 
-Vectors and hit targets use separate Leaflet panes with fixed z order. Station hit areas use geodesic circles while edit handles use markers. Popups and controls call `stopPropagation` so clicks do not fall through to the map and create accidental edits. Tour overlays portal outside the map subtree so they do not fight Leaflet layout.
+Map vectors, station hit discs, and handle markers live in separate Leaflet panes with a fixed stacking order. Popups and form controls stop pointer events from leaking to the map (otherwise a dismissed dialog still drops a station). The demo tour renders through a portal so it does not fight Leaflet’s layout and z-index.
 
 **Station labels**
 
-Labels are Leaflet tooltips with manual offsets and rotations per stop. Placement runs in screen space with a small overlap solver and clamped nudges; if overlap is still bad at the current zoom the layer turns labels off instead of drawing unreadable stacks. Manual overrides bypass auto placement. Still the weakest area and ongoing work.
+Labels are Leaflet tooltips with per-stop offsets and rotations. A small screen-space overlap pass nudges automatic placement; if overlap is still bad at the current zoom, labels hide rather than stacking into noise. Manual overrides skip auto placement. This is the roughest subsystem and still active work.
 
 **Client state and persistence**
 
-History is copy on write snapshots of stations, lines, and label overrides. Cloud saves debounce edits and share one JSON schema with local files; older files need coercion helpers before validation. Routing ties draft storage keys to `mapId` so two tabs do not clobber each other.
+Undo history stores snapshots of stations, lines, and label overrides with a cap that tightens on huge maps. Cloud saves debounce PUTs and reuse the same JSON shape as file export; older files go through coercion before validation. Draft keys are scoped by cloud map id so parallel tabs do not overwrite each other’s drafts.
