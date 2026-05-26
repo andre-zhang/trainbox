@@ -22,6 +22,71 @@ export type NominatimPlace = {
   east: number
 }
 
+/** Trailing street-type tokens (St, Ave, Rd, …) stripped for display names. */
+const STREET_SUFFIX_RE =
+  /\s+(Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Way|Court|Ct\.?|Place|Pl\.?|Crescent|Cres\.?|Circle|Cir\.?|Terrace|Ter\.?|Trail|Trl\.?|Highway|Hwy\.?|Parkway|Pkwy\.?|Square|Sq\.?|Gate|Route|Rte\.?|Close|Crescent)$/i
+
+function stripStreetSuffix(name: string): string {
+  let s = name.replace(/\s+/g, ' ').trim()
+  while (STREET_SUFFIX_RE.test(s)) {
+    s = s.replace(STREET_SUFFIX_RE, '').trim()
+  }
+  return s
+}
+
+function communityFromAddress(address: Record<string, string>): string {
+  return (address.neighbourhood || address.suburb || address.quarter || address.city_district || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Unique street labels from Nominatim address fields, suffix stripped. */
+function streetPartsFromAddress(address: Record<string, string>): string[] {
+  const raw = [address.road, address.pedestrian, address.path, address.residential].filter(
+    Boolean,
+  ) as string[]
+  const out: string[] = []
+  for (const part of raw) {
+    const cleaned = stripStreetSuffix(part)
+    if (!cleaned) continue
+    if (out.some((x) => x.toLowerCase() === cleaned.toLowerCase())) continue
+    out.push(cleaned)
+  }
+  return out
+}
+
+/**
+ * Name candidates in preference order:
+ * 1) primary street only (no Rd/Ave/St suffix)
+ * 2) street1 / street2 when two distinct streets are present
+ * 3) community / street
+ * 4) community alone if no street
+ * 5) fallback
+ */
+function buildStationNameCandidates(community: string, streets: string[]): string[] {
+  const candidates: string[] = []
+  if (streets.length >= 1) candidates.push(streets[0])
+  if (streets.length >= 2) candidates.push(`${streets[0]} / ${streets[1]}`)
+  if (community && streets.length >= 1) candidates.push(`${community} / ${streets[0]}`)
+  if (community && streets.length === 0) candidates.push(community)
+  candidates.push('Unnamed stop')
+  return [...new Set(candidates)]
+}
+
+function pickUniqueStationName(candidates: string[], usedNames: Set<string>): string {
+  for (const base of candidates) {
+    if (!usedNames.has(base.toLowerCase())) return base
+  }
+  const base = candidates[0] ?? 'Unnamed stop'
+  let name = base
+  let i = 2
+  while (usedNames.has(name.toLowerCase())) {
+    name = `${base} (${i})`
+    i++
+  }
+  return name
+}
+
 /** Search places; returns up to `limit` results with bounding boxes. */
 export async function searchNominatimPlaces(
   query: string,
@@ -69,8 +134,8 @@ export async function searchNominatimPlaces(
 }
 
 /**
- * Best-effort auto name: neighbourhood → major road → minor road.
- * Dedupes by appending " (2)" if `usedNames` already has the string.
+ * Auto name from reverse geocode. Prefers a single street name (suffix stripped), then
+ * street / street, then community / street. Appends " (2)" only if every candidate is taken.
  */
 export async function reverseGeocodeStationName(
   position: LatLng,
@@ -87,32 +152,9 @@ export async function reverseGeocodeStationName(
   if (!res.ok) return 'Unnamed stop'
   const d = (await res.json()) as { error?: string; address?: Record<string, string> }
   if (d.error) return 'Unnamed stop'
-  const a = d.address ?? {}
-  const parts: string[] = []
-  const n =
-    a.neighbourhood ||
-    a.suburb ||
-    a.quarter ||
-    a.city_district ||
-    a.city ||
-    a.town ||
-    a.village ||
-    ''
-  if (n) parts.push(n)
-  const road = a.road || a.pedestrian || a.path || ''
-  if (road) parts.push(road)
-  const minor = a.residential || a.neighbourhood || ''
-  if (minor && minor !== n && !parts.includes(minor)) parts.push(minor)
-
-  let base = parts.filter(Boolean).join(' · ') || road || n || 'Unnamed stop'
-  base = base.replace(/\s+/g, ' ').trim()
-  if (!base) base = 'Unnamed stop'
-
-  let name = base
-  let i = 2
-  while (usedNames.has(name.toLowerCase())) {
-    name = `${base} (${i})`
-    i++
-  }
-  return name
+  const address = d.address ?? {}
+  const community = communityFromAddress(address)
+  const streets = streetPartsFromAddress(address)
+  const candidates = buildStationNameCandidates(community, streets)
+  return pickUniqueStationName(candidates, usedNames)
 }
