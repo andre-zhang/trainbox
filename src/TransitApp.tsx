@@ -3052,6 +3052,7 @@ export default function TransitApp({
   }, [draftStorageKey])
 
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const draftDebounceMs = stations.length > LARGE_MAP_STATION_THRESHOLD ? 4000 : 2000
   useEffect(() => {
     if (stations.length === 0 && lines.length === 0) return
     const payload = JSON.stringify({
@@ -3068,13 +3069,14 @@ export default function TransitApp({
         /* quota or disabled */
       }
       draftSaveTimeoutRef.current = null
-    }, 2000)
+    }, draftDebounceMs)
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current)
     }
-  }, [stations, lines, stationLabelOverrides, draftStorageKey])
+  }, [stations, lines, stationLabelOverrides, draftStorageKey, draftDebounceMs])
 
   const cloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cloudDebounceMs = stations.length > LARGE_MAP_STATION_THRESHOLD ? 4000 : 2500
   useEffect(() => {
     if (!cloudMapId) return
     if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current)
@@ -3115,11 +3117,11 @@ export default function TransitApp({
           setCloudSyncLabel(e instanceof Error ? `Save failed: ${e.message}` : 'Save failed')
         }
       })()
-    }, 2500)
+    }, cloudDebounceMs)
     return () => {
       if (cloudSaveTimerRef.current) clearTimeout(cloudSaveTimerRef.current)
     }
-  }, [stations, lines, stationLabelOverrides, cloudMapId])
+  }, [stations, lines, stationLabelOverrides, cloudMapId, cloudDebounceMs])
 
   const toggleLineVisibility = useCallback(
     (lineId: string) => {
@@ -3157,6 +3159,34 @@ export default function TransitApp({
       prev.includes(lineId) ? prev.filter((id) => id !== lineId) : [...prev, lineId],
     )
   }, [])
+
+  const toggleEditModeGroupCollapsed = useCallback(
+    (mode: TransitMode) => {
+      setEditModeGroupCollapsed((p) => {
+        const collapsing = !p[mode]
+        if (collapsing) {
+          const lineIds = linesByMode[mode].map((l) => l.id)
+          setEditViewCollapsedLineIds((prev) => [...new Set([...prev, ...lineIds])])
+        }
+        return { ...p, [mode]: collapsing }
+      })
+    },
+    [linesByMode],
+  )
+
+  const toggleSystemMapModeGroupCollapsed = useCallback(
+    (mode: TransitMode) => {
+      setSystemMapModeGroupCollapsed((p) => {
+        const collapsing = !p[mode]
+        if (collapsing) {
+          const lineIds = new Set(linesByMode[mode].map((l) => l.id))
+          setSystemMapExpandedLineIds((prev) => prev.filter((id) => !lineIds.has(id)))
+        }
+        return { ...p, [mode]: collapsing }
+      })
+    },
+    [linesByMode],
+  )
 
   return (
     <>
@@ -4091,12 +4121,7 @@ export default function TransitApp({
                         <button
                           type="button"
                           className="modeLineGroupHeader"
-                          onClick={() =>
-                            setSystemMapModeGroupCollapsed((p) => ({
-                              ...p,
-                              [mode]: !p[mode],
-                            }))
-                          }
+                          onClick={() => toggleSystemMapModeGroupCollapsed(mode)}
                           aria-expanded={!modeCollapsed}
                         >
                           <span className="modeLineGroupToggle" aria-hidden>
@@ -4481,12 +4506,7 @@ export default function TransitApp({
                           <button
                             type="button"
                             className="modeLineGroupHeader"
-                            onClick={() =>
-                              setEditModeGroupCollapsed((p) => ({
-                                ...p,
-                                [mode]: !p[mode],
-                              }))
-                            }
+                            onClick={() => toggleEditModeGroupCollapsed(mode)}
                             aria-expanded={!modeCollapsed}
                           >
                             <span className="modeLineGroupToggle" aria-hidden>

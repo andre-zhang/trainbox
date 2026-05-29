@@ -47,6 +47,13 @@ const STATION_RADIUS_BASE_M = 70
 const STATION_ZOOM_REF = 12
 const STATION_ZOOM_SCALE = 0.4
 
+/** Below this station count, render everything. Above it, cull off-screen layers. */
+const VIEWPORT_CULL_MIN_STATIONS = 350
+/** Skip O(n²) label nudge solver above this visible label count. */
+const LABEL_OVERLAP_SOLVE_MAX = 220
+/** Skip expensive overlap severity scan when labels would hide anyway. */
+const LABEL_OVERLAP_SEVERITY_SKIP = 550
+
 /** Small geodesic distance (m) for deduping edit handles that would stack on the map. */
 function approxDistanceM(a: LatLng, b: LatLng): number {
   const R = 6371000
@@ -139,6 +146,19 @@ function estimateStationLabelSizePx(name: string, fontPx: number): { w: number; 
 }
 
 /** Push labels apart in screen space when anchor offsets would stack on dense maps. */
+function boundsContainsPadded(bounds: L.LatLngBounds, lat: number, lng: number, padRatio = 0.12): boolean {
+  const sw = bounds.getSouthWest()
+  const ne = bounds.getNorthEast()
+  const latPad = (ne.lat - sw.lat) * padRatio
+  const lngPad = (ne.lng - sw.lng) * padRatio
+  return (
+    lat >= sw.lat - latPad &&
+    lat <= ne.lat + latPad &&
+    lng >= sw.lng - lngPad &&
+    lng <= ne.lng + lngPad
+  )
+}
+
 function resolveOverlappingMapLabels(
   items: {
     id: string
@@ -154,6 +174,9 @@ function resolveOverlappingMapLabels(
   const result = new Map<string, MapLabelPlacement>()
   for (const it of items) {
     result.set(it.id, { ...it.base })
+  }
+  if (items.length > LABEL_OVERLAP_SOLVE_MAX) {
+    return result
   }
   const movableIds = items.filter((x) => !x.manual).map((x) => x.id)
   const byId = new Map(items.map((x) => [x.id, x]))
@@ -280,6 +303,7 @@ function stationLabelOverlapTooSevere(
   if (zoom >= ZOOM_STATION_LABELS_IGNORE_OVERLAP) return false
   const n = items.length
   if (n < 2) return false
+  if (n > LABEL_OVERLAP_SEVERITY_SKIP) return true
   const totalPairs = (n * (n - 1)) / 2
   const BOX_SHRINK = 0.86
   const pad = 3
@@ -487,6 +511,7 @@ export function TransitLayer({
   }, [map])
 
   const [zoom, setZoom] = useState(() => map.getZoom())
+  const [viewBounds, setViewBounds] = useState<L.LatLngBounds>(() => map.getBounds())
   useMapEvents({
     zoomend: () => setZoom(map.getZoom()),
   })
@@ -502,6 +527,7 @@ export function TransitLayer({
   useEffect(() => {
     const update = () => {
       const bounds = map.getBounds()
+      setViewBounds(bounds)
       const heightDeg = bounds.getNorth() - bounds.getSouth()
       const heightM = heightDeg * 111320
       const size = map.getSize()
@@ -586,6 +612,25 @@ export function TransitLayer({
     return m
   }, [lines])
 
+  const stationIndexOnLine = useMemo(() => {
+    const m = new Map<string, Map<string, number>>()
+    for (const line of lines) {
+      let lineMap = m.get(line.id)
+      if (!lineMap) {
+        lineMap = new Map()
+        m.set(line.id, lineMap)
+      }
+      for (let i = 0; i < line.stationIds.length; i++) {
+        const sid = line.stationIds[i]
+        if (!lineMap.has(sid)) lineMap.set(sid, i)
+      }
+    }
+    return m
+  }, [lines])
+
+  const idxOnLine = (lineId: string, stationId: string) =>
+    stationIndexOnLine.get(lineId)?.get(stationId) ?? -1
+
   const stationDominantMode = (stationId: string): TransitMode => {
     const at = linesByStationId.get(stationId) ?? []
     const visible = at.filter(lineShownOnMap)
@@ -633,6 +678,47 @@ export function TransitLayer({
     [lines, stationsById],
   )
 
+  const selectedLine = selectedLineId ? lines.find((l) => l.id === selectedLineId) : null
+  const selectedLineStationIds = useMemo(
+    () => (selectedLine ? new Set(selectedLine.stationIds) : new Set<string>()),
+    [selectedLine],
+  )
+
+  const viewportCullActive = stationCount >= VIEWPORT_CULL_MIN_STATIONS
+
+  const visibleStationIdSet = useMemo(() => {
+    if (!viewportCullActive) return null
+    const set = new Set<string>()
+    for (const s of stations) {
+      if (boundsContainsPadded(viewBounds, s.position.lat, s.position.lng)) {
+        set.add(s.id)
+      }
+    }
+    if (editLineMode) {
+      for (const id of selectedLineStationIds) set.add(id)
+    }
+    return set
+  }, [viewportCullActive, stations, viewBounds, editLineMode, selectedLineStationIds])
+
+  const visibleLineIdSet = useMemo(() => {
+    if (!visibleStationIdSet) return null
+    const set = new Set<string>()
+    for (const line of lines) {
+      if (!lineShownOnMap(line)) continue
+      if (editLineMode && selectedLineId === line.id) {
+        set.add(line.id)
+        continue
+      }
+      for (const sid of line.stationIds) {
+        if (visibleStationIdSet.has(sid)) {
+          set.add(line.id)
+          break
+        }
+      }
+    }
+    return set
+  }, [visibleStationIdSet, lines, editLineMode, selectedLineId, modeVisibility, hiddenLineIds])
+
   /**
    * Smooth curves: only skip at very low zoom (perf) or on huge non-rail maps (many short polylines).
    * Regional/national rail always curve like other modes when zoomed in.
@@ -641,26 +727,25 @@ export function TransitLayer({
     () =>
       rawLinePositions.map((positions, idx) => {
         const line = lines[idx]
+        if (visibleLineIdSet && !visibleLineIdSet.has(line.id)) return positions
         const mode = getLineMode(line)
         const isRail = mode === 'regional_rail' || mode === 'national_rail'
         const n = positions.length
         const skipSmooth =
-          zoom < 10 || (!isRail && stations.length > 1600 && n > 24)
+          zoom < 10 ||
+          (stations.length > 400 && zoom < 12) ||
+          (!isRail && stations.length > 1600 && n > 24)
         if (skipSmooth) return positions
-        const steps = n > 140 ? 7 : n > 70 ? 9 : 12
+        let steps = n > 140 ? 7 : n > 70 ? 9 : 12
+        if (stations.length > 500) steps = Math.min(steps, 6)
+        if (stations.length > 1000) steps = Math.min(steps, 5)
         const hasWaypoints = (line.waypoints?.length ?? 0) > 0
         if (hasWaypoints) {
           return piecewiseQuadraticPathForLine(line, stationsById, steps)
         }
         return smoothCurveThroughPoints(positions, steps)
       }),
-    [rawLinePositions, zoom, stations.length, lines, stationsById],
-  )
-
-  const selectedLine = selectedLineId ? lines.find((l) => l.id === selectedLineId) : null
-  const selectedLineStationIds = useMemo(
-    () => (selectedLine ? new Set(selectedLine.stationIds) : new Set<string>()),
-    [selectedLine],
+    [rawLinePositions, zoom, stations.length, lines, stationsById, visibleLineIdSet],
   )
 
   const expressStationIds = useMemo(() => {
@@ -703,7 +788,7 @@ export function TransitLayer({
       let sumCos = 0
       let sumSin = 0
       for (const line of linesThrough) {
-        const idx = line.stationIds.indexOf(station.id)
+        const idx = idxOnLine(line.id, station.id)
         const prevId = line.stationIds[idx - 1]
         const nextId = line.stationIds[idx + 1]
         const prevPos = prevId ? stationsById.get(prevId)?.position : null
@@ -738,7 +823,7 @@ export function TransitLayer({
     let perpSinSum = 0
     const fullSegments: { segAngle: number; perpSide: number }[] = []
     for (const line of linesThrough) {
-      const idx = line.stationIds.indexOf(station.id)
+      const idx = idxOnLine(line.id, station.id)
       const prevId = line.stationIds[idx - 1]
       const nextId = line.stationIds[idx + 1]
       const prevPos = prevId ? stationsById.get(prevId)?.position : null
@@ -768,7 +853,7 @@ export function TransitLayer({
     while (perpDeg >= 360) perpDeg -= 360
     while (perpDeg < 0) perpDeg += 360
 
-    const lineIdx = linesThrough[0] ? linesThrough[0].stationIds.indexOf(station.id) : 0
+    const lineIdx = linesThrough[0] ? idxOnLine(linesThrough[0].id, station.id) : 0
     const flipForAlternate = lineIdx % 2 === 1
     if (flipForAlternate && fullSegments.length > 0) {
       perpDeg = (perpDeg + 180) % 360
@@ -777,7 +862,7 @@ export function TransitLayer({
     const DENSE_DEG = 0.003
     let hasCloseNeighbor = false
     for (const line of linesThrough) {
-      const idx = line.stationIds.indexOf(station.id)
+      const idx = idxOnLine(line.id, station.id)
       const prevId = line.stationIds[idx - 1]
       const nextId = line.stationIds[idx + 1]
       const prevPos = prevId ? stationsById.get(prevId)?.position : null
@@ -918,6 +1003,7 @@ export function TransitLayer({
     const items = stations
       .map((station, stationIndex) => ({ station, stationIndex }))
       .filter(({ station }) => {
+        if (visibleStationIdSet && !visibleStationIdSet.has(station.id)) return false
         const ls = linesByStationId.get(station.id) ?? []
         if (ls.length === 0) return true
         return ls.some((line) => lineShownOnMap(line))
@@ -973,6 +1059,7 @@ export function TransitLayer({
     hiddenLineIds,
     stationLabelFontSizePxOverride,
     map,
+    visibleStationIdSet,
   ])
 
   const lineMidpointIconNormal = useMemo(
@@ -1119,6 +1206,7 @@ export function TransitLayer({
     <>
       {lines.map((line, i) => {
         if (!lineShownOnMap(line)) return null
+        if (visibleLineIdSet && !visibleLineIdSet.has(line.id)) return null
         const positions = linePositions[i]
         if (!positions || positions.length < 2) return null
         const latLngs = positions.map((p) => [p.lat, p.lng] as [number, number])
@@ -1192,6 +1280,7 @@ export function TransitLayer({
       {stations
         .map((station, stationIndex) => ({ station, stationIndex }))
         .filter(({ station }) => {
+          if (visibleStationIdSet && !visibleStationIdSet.has(station.id)) return false
           const ls = linesByStationId.get(station.id) ?? []
           if (ls.length === 0) return true
           return ls.some((line) => lineShownOnMap(line))
