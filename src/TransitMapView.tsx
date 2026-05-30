@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react'
 import type { CSSProperties, MutableRefObject, SyntheticEvent } from 'react'
 import {
   MapContainer,
   TileLayer,
   useMapEvents,
-  Circle,
+  CircleMarker,
   Popup,
   Polyline,
   useMap,
@@ -31,6 +31,7 @@ import {
   smoothCurveThroughPoints,
 } from './utils/curve'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
+import { buildSmoothedLinePositions, mapGeometryCacheKey } from './mapGeometryPreload'
 
 const CARTODB_TILES = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
 const CARTODB_SIMPLIFIED_TILES = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
@@ -47,12 +48,13 @@ const STATION_RADIUS_BASE_M = 70
 const STATION_ZOOM_REF = 12
 const STATION_ZOOM_SCALE = 0.4
 
-/** Below this station count, render everything. Above it, cull off-screen layers. */
-const VIEWPORT_CULL_MIN_STATIONS = 350
-/** Skip O(n²) label nudge solver above this visible label count. */
+/** Skip O(n²) label nudge solver above this label count. */
 const LABEL_OVERLAP_SOLVE_MAX = 220
 /** Skip expensive overlap severity scan when labels would hide anyway. */
 const LABEL_OVERLAP_SEVERITY_SKIP = 550
+/** Reference zoom for one-time label layout at map open (pan/zoom does not re-run layout). */
+const LABEL_LAYOUT_REFERENCE_ZOOM = 13
+const LABEL_LAYOUT_REFERENCE_DOT_PX = 12
 
 /** Small geodesic distance (m) for deduping edit handles that would stack on the map. */
 function approxDistanceM(a: LatLng, b: LatLng): number {
@@ -145,20 +147,15 @@ function estimateStationLabelSizePx(name: string, fontPx: number): { w: number; 
   return { w, h }
 }
 
-/** Push labels apart in screen space when anchor offsets would stack on dense maps. */
-function boundsContainsPadded(bounds: L.LatLngBounds, lat: number, lng: number, padRatio = 0.12): boolean {
-  const sw = bounds.getSouthWest()
-  const ne = bounds.getNorthEast()
-  const latPad = (ne.lat - sw.lat) * padRatio
-  const lngPad = (ne.lng - sw.lng) * padRatio
-  return (
-    lat >= sw.lat - latPad &&
-    lat <= ne.lat + latPad &&
-    lng >= sw.lng - lngPad &&
-    lng <= ne.lng + lngPad
-  )
+function scaleLabelPlacement(placement: MapLabelPlacement, scale: number): MapLabelPlacement {
+  if (Math.abs(scale - 1) < 0.04) return placement
+  return {
+    ...placement,
+    offset: [placement.offset[0] * scale, placement.offset[1] * scale],
+  }
 }
 
+/** Push labels apart in screen space when anchor offsets would stack on dense maps. */
 function resolveOverlappingMapLabels(
   items: {
     id: string
@@ -385,7 +382,7 @@ function TourStationVectorDomTag({
       let el: HTMLElement | undefined
       map.eachLayer((layer) => {
         if (el) return
-        if (kind === 'circle' && layer instanceof L.Circle) {
+        if (kind === 'circle' && (layer instanceof L.Circle || layer instanceof L.CircleMarker)) {
           const ll = layer.getLatLng()
           if (!ll) return
           if (Math.abs(ll.lat - target.lat) < eps && Math.abs(ll.lng - target.lng) < eps) {
@@ -438,9 +435,12 @@ export function TransitLayer({
   onStationRename,
   onToggleExpressStation,
   onDeleteStation,
+  precomputedLinePositions,
 }: {
   stations: Station[]
   lines: Line[]
+  /** Smoothed paths built once at map open — avoids recomputing curves on pan/zoom. */
+  precomputedLinePositions: LatLng[][]
   lineMode: boolean
   editLineMode: boolean
   selectedLineId: string | null
@@ -511,7 +511,6 @@ export function TransitLayer({
   }, [map])
 
   const [zoom, setZoom] = useState(() => map.getZoom())
-  const [viewBounds, setViewBounds] = useState<L.LatLngBounds>(() => map.getBounds())
   useMapEvents({
     zoomend: () => setZoom(map.getZoom()),
   })
@@ -524,10 +523,10 @@ export function TransitLayer({
   const [stationIconSizePx, setStationIconSizePx] = useState(20)
   const [dotRadiusPx, setDotRadiusPx] = useState(12)
   const [pixelsPerDeg, setPixelsPerDeg] = useState({ lat: 90000, lng: 60000 })
+  /** Pan does not touch React state — only zoom updates metrics (labels use a frozen layout). */
   useEffect(() => {
-    const update = () => {
+    const updateMetrics = () => {
       const bounds = map.getBounds()
-      setViewBounds(bounds)
       const heightDeg = bounds.getNorth() - bounds.getSouth()
       const heightM = heightDeg * 111320
       const size = map.getSize()
@@ -548,10 +547,14 @@ export function TransitLayer({
         lng: Math.max(1, Math.abs(pLng.x - p0.x) / dLng),
       })
     }
-    update()
-    map.on('zoomend moveend', update)
+    const onZoomEnd = () => {
+      setZoom(map.getZoom())
+      updateMetrics()
+    }
+    updateMetrics()
+    map.on('zoomend', onZoomEnd)
     return () => {
-      map.off('zoomend moveend', update)
+      map.off('zoomend', onZoomEnd)
     }
   }, [map, stationRadiusM])
 
@@ -587,6 +590,11 @@ export function TransitLayer({
   const labelGapFromDotPx = Math.max(4, Math.min(11, Math.round(labelFontSizePx * 0.62)))
   const baseLabelDistancePx = Math.min(20, Math.max(5, Math.round(dotRadiusPx + labelGapFromDotPx)))
   const overrideLabelDistancePx = dotRadiusPx + labelFontSizePx / 2 + 4
+  const placementMetricsRef = useRef({
+    baseLabelDistancePx,
+    pixelsPerDeg,
+  })
+  placementMetricsRef.current = { baseLabelDistancePx, pixelsPerDeg }
 
   const stationsById = useMemo(() => {
     const m = new Map<string, Station>()
@@ -660,93 +668,16 @@ export function TransitLayer({
     return m
   }, [stationIconSizePx, markerStyles])
 
-  const rawLinePositions = useMemo(
-    () =>
-      lines.map((line) => {
-        const positions: LatLng[] = []
-        for (let i = 0; i < line.stationIds.length; i++) {
-          const id = line.stationIds[i]
-          const pos = stationsById.get(id)?.position
-          if (pos) positions.push(pos)
-          if (i < line.stationIds.length - 1) {
-            const wp = line.waypoints?.find((w) => w.afterStationId === id)
-            if (wp) positions.push(wp.position)
-          }
-        }
-        return positions
-      }),
-    [lines, stationsById],
-  )
-
   const selectedLine = selectedLineId ? lines.find((l) => l.id === selectedLineId) : null
   const selectedLineStationIds = useMemo(
     () => (selectedLine ? new Set(selectedLine.stationIds) : new Set<string>()),
     [selectedLine],
   )
 
-  const viewportCullActive = stationCount >= VIEWPORT_CULL_MIN_STATIONS
-
-  const visibleStationIdSet = useMemo(() => {
-    if (!viewportCullActive) return null
-    const set = new Set<string>()
-    for (const s of stations) {
-      if (boundsContainsPadded(viewBounds, s.position.lat, s.position.lng)) {
-        set.add(s.id)
-      }
-    }
-    if (editLineMode) {
-      for (const id of selectedLineStationIds) set.add(id)
-    }
-    return set
-  }, [viewportCullActive, stations, viewBounds, editLineMode, selectedLineStationIds])
-
-  const visibleLineIdSet = useMemo(() => {
-    if (!visibleStationIdSet) return null
-    const set = new Set<string>()
-    for (const line of lines) {
-      if (!lineShownOnMap(line)) continue
-      if (editLineMode && selectedLineId === line.id) {
-        set.add(line.id)
-        continue
-      }
-      for (const sid of line.stationIds) {
-        if (visibleStationIdSet.has(sid)) {
-          set.add(line.id)
-          break
-        }
-      }
-    }
-    return set
-  }, [visibleStationIdSet, lines, editLineMode, selectedLineId, modeVisibility, hiddenLineIds])
-
-  /**
-   * Smooth curves: only skip at very low zoom (perf) or on huge non-rail maps (many short polylines).
-   * Regional/national rail always curve like other modes when zoomed in.
-   */
-  const linePositions = useMemo(
-    () =>
-      rawLinePositions.map((positions, idx) => {
-        const line = lines[idx]
-        if (visibleLineIdSet && !visibleLineIdSet.has(line.id)) return positions
-        const mode = getLineMode(line)
-        const isRail = mode === 'regional_rail' || mode === 'national_rail'
-        const n = positions.length
-        const skipSmooth =
-          zoom < 10 ||
-          (stations.length > 400 && zoom < 12) ||
-          (!isRail && stations.length > 1600 && n > 24)
-        if (skipSmooth) return positions
-        let steps = n > 140 ? 7 : n > 70 ? 9 : 12
-        if (stations.length > 500) steps = Math.min(steps, 6)
-        if (stations.length > 1000) steps = Math.min(steps, 5)
-        const hasWaypoints = (line.waypoints?.length ?? 0) > 0
-        if (hasWaypoints) {
-          return piecewiseQuadraticPathForLine(line, stationsById, steps)
-        }
-        return smoothCurveThroughPoints(positions, steps)
-      }),
-    [rawLinePositions, zoom, stations.length, lines, stationsById, visibleLineIdSet],
-  )
+  const linePositions =
+    precomputedLinePositions.length === lines.length
+      ? precomputedLinePositions
+      : buildSmoothedLinePositions(lines, stationsById)
 
   const expressStationIds = useMemo(() => {
     const s = new Map<string, Set<string>>()
@@ -769,6 +700,7 @@ export function TransitLayer({
     rotationDeg: number
     direction: 'left' | 'right' | 'top' | 'bottom' | 'center'
   } {
+    const { baseLabelDistancePx: baseDist, pixelsPerDeg: ppg } = placementMetricsRef.current
     const override = stationLabelOverrides[station.id]
     if (override) {
       const [ox, oy] = override.offset
@@ -810,10 +742,10 @@ export function TransitLayer({
     } else {
       const dir = stationIndex % 4
       const placements: { offset: [number, number]; direction: 'left' | 'right' | 'top' | 'bottom' | 'center' }[] = [
-        { offset: [0, -baseLabelDistancePx], direction: 'center' },
-        { offset: [baseLabelDistancePx, 0], direction: 'right' },
-        { offset: [0, baseLabelDistancePx], direction: 'center' },
-        { offset: [-baseLabelDistancePx, 0], direction: 'left' },
+        { offset: [0, -baseDist], direction: 'center' },
+        { offset: [baseDist, 0], direction: 'right' },
+        { offset: [0, baseDist], direction: 'center' },
+        { offset: [-baseDist, 0], direction: 'left' },
       ]
       const p = placements[dir]
       return { offset: p.offset, rotationDeg: 0, direction: p.direction }
@@ -902,8 +834,8 @@ export function TransitLayer({
       if (rotationDeg > 90 && rotationDeg < 270) rotationDeg -= 180
 
       // Place anchor off the corridor (perpendicular in screen px), not along the text angle — otherwise the label sits on the dot.
-      const ppl = pixelsPerDeg.lng
-      const ppa = pixelsPerDeg.lat
+      const ppl = ppg.lng
+      const ppa = ppg.lat
       const tang = fullSegments.length > 0 ? fullSegments[0].segAngle : lineAngle
       const side = fullSegments.length > 0 ? fullSegments[0].perpSide : lineIdx % 2 === 0 ? 1 : -1
       const dLng = Math.cos(tang) * 1e-5
@@ -919,7 +851,7 @@ export function TransitLayer({
         nx = ty
         ny = -tx
       }
-      const distancePx = Math.min(26, Math.max(10, Math.round(baseLabelDistancePx * 1.08)))
+      const distancePx = Math.min(26, Math.max(10, Math.round(baseDist * 1.08)))
       offsetX = Math.round(nx * distancePx)
       offsetY = Math.round(ny * distancePx)
     } else {
@@ -975,20 +907,20 @@ export function TransitLayer({
       const snapLeft = chosen?.key === 'left'
 
       if (snapRight) {
-        offsetX = baseLabelDistancePx
+        offsetX = baseDist
         offsetY = 0
         direction = 'right'
       } else if (snapLeft) {
-        offsetX = -baseLabelDistancePx
+        offsetX = -baseDist
         offsetY = 0
         direction = 'left'
       } else if (snapTop) {
         offsetX = 0
-        offsetY = -baseLabelDistancePx
+        offsetY = -baseDist
         direction = 'center'
       } else {
         offsetX = 0
-        offsetY = baseLabelDistancePx
+        offsetY = baseDist
         direction = 'center'
       }
       rotationDeg = 0
@@ -997,13 +929,63 @@ export function TransitLayer({
     return { offset: [offsetX, offsetY], rotationDeg, direction }
   }
 
-  const stationLabelLayout = useMemo(() => {
+  const labelLayoutInputKey = useMemo(
+    () =>
+      [
+        stations.length,
+        lines.length,
+        showStationNamesOnMap,
+        stationLabelFontSizePxOverride ?? '',
+        JSON.stringify(stationLabelOverrides),
+        JSON.stringify(modeVisibility),
+        (hiddenLineIds ?? []).join(','),
+        stations.map((s) => `${s.id}:${s.name}:${s.position.lat.toFixed(5)},${s.position.lng.toFixed(5)}`).join('|'),
+        lines.map((l) => `${l.id}:${l.stationIds.join(',')}`).join(';'),
+      ].join('#'),
+    [
+      stations,
+      lines,
+      showStationNamesOnMap,
+      stationLabelOverrides,
+      modeVisibility,
+      hiddenLineIds,
+      stationLabelFontSizePxOverride,
+    ],
+  )
+
+  const [frozenLabelLayout, setFrozenLabelLayout] = useState<{
+    renderNames: boolean
+    byId: Map<string, MapLabelPlacement>
+  }>(() => ({ renderNames: false, byId: new Map() }))
+
+  useEffect(() => {
     const empty = new Map<string, MapLabelPlacement>()
-    if (!showLabels) return { renderNames: false, byId: empty }
+    if (!showStationNamesOnMap) {
+      setFrozenLabelLayout({ renderNames: false, byId: empty })
+      return
+    }
+    const refGap = Math.max(4, Math.min(11, Math.round(10 * 0.62)))
+    const refBaseDist = Math.min(20, Math.max(5, Math.round(LABEL_LAYOUT_REFERENCE_DOT_PX + refGap)))
+    const refPixelsPerDeg = { lat: 92000, lng: 75000 }
+    const refLabelFont =
+      stationLabelFontSizePxOverride ??
+      Math.max(
+        7,
+        Math.min(
+          12,
+          Math.round(
+            8 +
+              Math.max(0, Math.min(3, LABEL_LAYOUT_REFERENCE_ZOOM - 11)) -
+              (stationCount <= 15 ? 0 : stationCount <= 40 ? 1 : stationCount <= 80 ? 2 : stationCount <= 200 ? 3 : 4),
+          ),
+        ),
+      )
+
+    placementMetricsRef.current = { baseLabelDistancePx: refBaseDist, pixelsPerDeg: refPixelsPerDeg }
+
     const items = stations
       .map((station, stationIndex) => ({ station, stationIndex }))
       .filter(({ station }) => {
-        if (visibleStationIdSet && !visibleStationIdSet.has(station.id)) return false
         const ls = linesByStationId.get(station.id) ?? []
         if (ls.length === 0) return true
         return ls.some((line) => lineShownOnMap(line))
@@ -1012,8 +994,7 @@ export function TransitLayer({
         const base = getLabelPlacement(station, stationIndex)
         const manual = !!stationLabelOverrides[station.id]
         const dm = stationDominantMode(station.id)
-        const fontPx =
-          labelStyles[dm].fontSizePx > 0 ? labelStyles[dm].fontSizePx : labelFontSizePx
+        const fontPx = labelStyles[dm].fontSizePx > 0 ? labelStyles[dm].fontSizePx : refLabelFont
         return {
           id: station.id,
           position: station.position,
@@ -1023,9 +1004,10 @@ export function TransitLayer({
           manual,
         }
       })
-    const resolved = resolveOverlappingMapLabels(items, pixelsPerDeg.lat, pixelsPerDeg.lng)
-    const maxLabelNudgePx = zoom >= 14 ? 8 : zoom >= 13 ? 10 : 12
-    const maxLabelRadiusPx = Math.min(26, Math.max(16, Math.round(baseLabelDistancePx + 8)))
+
+    const resolved = resolveOverlappingMapLabels(items, refPixelsPerDeg.lat, refPixelsPerDeg.lng)
+    const maxLabelNudgePx = 10
+    const maxLabelRadiusPx = Math.min(26, Math.max(16, Math.round(refBaseDist + 8)))
     for (const it of items) {
       if (it.manual) continue
       const cur = resolved.get(it.id)
@@ -1037,30 +1019,35 @@ export function TransitLayer({
       items.map(({ id, position, name, fontPx }) => ({ id, position, name, fontPx })),
       resolved,
       map,
-      zoom,
+      LABEL_LAYOUT_REFERENCE_ZOOM,
     )
-    if (overlap) return { renderNames: false, byId: empty }
-    return { renderNames: true, byId: resolved }
+    placementMetricsRef.current = { baseLabelDistancePx, pixelsPerDeg }
+    setFrozenLabelLayout(
+      overlap ? { renderNames: false, byId: empty } : { renderNames: true, byId: resolved },
+    )
   }, [
-    showLabels,
+    labelLayoutInputKey,
+    showStationNamesOnMap,
     stations,
-    lines,
-    stationsById,
     linesByStationId,
     stationLabelOverrides,
-    zoom,
-    stationCount,
-    dotRadiusPx,
-    pixelsPerDeg.lat,
-    pixelsPerDeg.lng,
-    labelFontSizePx,
     labelStyles,
-    modeVisibility,
-    hiddenLineIds,
+    stationCount,
     stationLabelFontSizePxOverride,
     map,
-    visibleStationIdSet,
   ])
+
+  const labelOffsetScale = baseLabelDistancePx / LABEL_LAYOUT_REFERENCE_DOT_PX
+  const stationLabelLayout = useMemo(() => {
+    if (!showLabels) return { renderNames: false, byId: new Map<string, MapLabelPlacement>() }
+    if (!frozenLabelLayout.renderNames) return frozenLabelLayout
+    if (Math.abs(labelOffsetScale - 1) < 0.04) return frozenLabelLayout
+    const scaled = new Map<string, MapLabelPlacement>()
+    for (const [id, pl] of frozenLabelLayout.byId) {
+      scaled.set(id, scaleLabelPlacement(pl, labelOffsetScale))
+    }
+    return { renderNames: true, byId: scaled }
+  }, [showLabels, frozenLabelLayout, labelOffsetScale])
 
   const lineMidpointIconNormal = useMemo(
     () =>
@@ -1206,7 +1193,6 @@ export function TransitLayer({
     <>
       {lines.map((line, i) => {
         if (!lineShownOnMap(line)) return null
-        if (visibleLineIdSet && !visibleLineIdSet.has(line.id)) return null
         const positions = linePositions[i]
         if (!positions || positions.length < 2) return null
         const latLngs = positions.map((p) => [p.lat, p.lng] as [number, number])
@@ -1280,7 +1266,6 @@ export function TransitLayer({
       {stations
         .map((station, stationIndex) => ({ station, stationIndex }))
         .filter(({ station }) => {
-          if (visibleStationIdSet && !visibleStationIdSet.has(station.id)) return false
           const ls = linesByStationId.get(station.id) ?? []
           if (ls.length === 0) return true
           return ls.some((line) => lineShownOnMap(line))
@@ -1438,15 +1423,15 @@ export function TransitLayer({
 
         const isExpressStation = expressStationIds.has(station.id)
         const mScale = ms.scale ?? 1
-        const baseRadius = (isExpressStation ? stationRadiusM * 1.4 : stationRadiusM) * mScale
-        const hitRadiusM = baseRadius * 1.8
+        const visualRadiusPx = Math.max(4, (isExpressStation ? dotRadiusPx * 1.4 : dotRadiusPx) * mScale)
+        const hitRadiusPx = visualRadiusPx * 1.8
 
         return (
           <>
-            <Circle
+            <CircleMarker
               key={`${station.id}-hit`}
               center={[station.position.lat, station.position.lng]}
-              radius={hitRadiusM}
+              radius={hitRadiusPx}
               pathOptions={{
                 color: 'transparent',
                 fillColor: 'transparent',
@@ -1463,17 +1448,16 @@ export function TransitLayer({
                 },
               }}
             />
-            <Circle
+            <CircleMarker
               key={station.id}
               center={[station.position.lat, station.position.lng]}
-              radius={baseRadius}
+              radius={visualRadiusPx}
               pathOptions={{
                 fillColor: isExpressStation ? '#111827' : ms.fill ?? '#ffffff',
                 color: ms.stroke ?? '#1a1a1a',
                 weight: 2,
                 fillOpacity: 1,
                 pane: 'stationsPane',
-                zIndexOffset: 100,
               } as L.PathOptions}
               eventHandlers={{
                 click: (e: L.LeafletMouseEvent) => {
@@ -1596,7 +1580,7 @@ export function TransitLayer({
                   </span>
                 </Tooltip>
               )}
-            </Circle>
+            </CircleMarker>
           </>
         )
       })}
@@ -1895,7 +1879,48 @@ export default function TransitMapView({
   const initialCenter = initialViewRef.current.center
   const initialZoom = initialViewRef.current.zoom
 
+  const geometryKey = useMemo(() => mapGeometryCacheKey(stations, lines), [stations, lines])
+  const [precomputedLinePositions, setPrecomputedLinePositions] = useState<LatLng[][]>(() => [])
+  const [mapLayersReady, setMapLayersReady] = useState(() => stations.length < 80 && lines.length < 40)
+
+  useLayoutEffect(() => {
+    if (lines.length === 0) {
+      setPrecomputedLinePositions([])
+      setMapLayersReady(true)
+      return
+    }
+    const byId = new Map(stations.map((s) => [s.id, s]))
+    const heavy = stations.length >= 80 || lines.length >= 40
+    if (!heavy) {
+      setPrecomputedLinePositions(buildSmoothedLinePositions(lines, byId))
+      setMapLayersReady(true)
+      return
+    }
+    setMapLayersReady(false)
+    let cancelled = false
+    const finish = () => {
+      if (cancelled) return
+      setPrecomputedLinePositions(buildSmoothedLinePositions(lines, byId))
+      setMapLayersReady(true)
+    }
+    if (typeof requestIdleCallback !== 'undefined') {
+      const id = requestIdleCallback(finish, { timeout: 12000 })
+      return () => {
+        cancelled = true
+        cancelIdleCallback(id)
+      }
+    }
+    const t = window.setTimeout(finish, 0)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [geometryKey, stations, lines])
+
+  const showWarmupOverlay = !mapLayersReady && (stations.length >= 80 || lines.length >= 40)
+
   return (
+    <div className="transitMapRoot">
     <MapContainer center={initialCenter} zoom={initialZoom} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
       <ScaleControl position="bottomleft" metric imperial />
       <TileLayer
@@ -1916,9 +1941,11 @@ export default function TransitMapView({
         addingStationAfter={addingStationAfter}
         onAddStationBetween={onAddStationBetween}
       />
+      {mapLayersReady ? (
       <TransitLayer
         stations={stations}
         lines={lines}
+        precomputedLinePositions={precomputedLinePositions}
         lineMode={!systemMapView && mode === 'line'}
         editLineMode={!systemMapView && mode === 'edit-line'}
         selectedLineId={systemMapView ? null : selectedLineId}
@@ -1941,7 +1968,14 @@ export default function TransitMapView({
         onToggleExpressStation={onToggleExpressStation}
         onDeleteStation={onDeleteStation}
       />
+      ) : null}
     </MapContainer>
+    {showWarmupOverlay ? (
+      <div className="mapWarmupOverlay" aria-live="polite" role="status">
+        <p className="mapWarmupOverlayText">Preparing map…</p>
+      </div>
+    ) : null}
+    </div>
   )
 }
 
