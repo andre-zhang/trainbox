@@ -1881,27 +1881,38 @@ export default function TransitMapView({
 
   const geometryKey = useMemo(() => mapGeometryCacheKey(stations, lines), [stations, lines])
   const [precomputedLinePositions, setPrecomputedLinePositions] = useState<LatLng[][]>(() => [])
-  const [mapLayersReady, setMapLayersReady] = useState(() => stations.length < 80 && lines.length < 40)
+  const isHeavyMap = stations.length >= 80 || lines.length >= 40
+  const [mapLayersReady, setMapLayersReady] = useState(() => !isHeavyMap)
+  /** After first render, never hide layers again — avoids white flash when editing. */
+  const mapEverReadyRef = useRef(!isHeavyMap)
 
   useLayoutEffect(() => {
+    const applyPositions = (byId: Map<string, Station>) => {
+      setPrecomputedLinePositions(buildSmoothedLinePositions(lines, byId))
+      setMapLayersReady(true)
+      mapEverReadyRef.current = true
+    }
+
     if (lines.length === 0) {
       setPrecomputedLinePositions([])
       setMapLayersReady(true)
+      mapEverReadyRef.current = true
       return
     }
+
     const byId = new Map(stations.map((s) => [s.id, s]))
     const heavy = stations.length >= 80 || lines.length >= 40
-    if (!heavy) {
-      setPrecomputedLinePositions(buildSmoothedLinePositions(lines, byId))
-      setMapLayersReady(true)
+
+    if (!heavy || mapEverReadyRef.current) {
+      applyPositions(byId)
       return
     }
+
     setMapLayersReady(false)
     let cancelled = false
     const finish = () => {
       if (cancelled) return
-      setPrecomputedLinePositions(buildSmoothedLinePositions(lines, byId))
-      setMapLayersReady(true)
+      applyPositions(byId)
     }
     if (typeof requestIdleCallback !== 'undefined') {
       const id = requestIdleCallback(finish, { timeout: 12000 })
@@ -1917,7 +1928,8 @@ export default function TransitMapView({
     }
   }, [geometryKey, stations, lines])
 
-  const showWarmupOverlay = !mapLayersReady && (stations.length >= 80 || lines.length >= 40)
+  const showWarmupOverlay = !mapLayersReady && !mapEverReadyRef.current && isHeavyMap
+  const showTransitLayer = mapLayersReady || mapEverReadyRef.current
 
   return (
     <div className="transitMapRoot">
@@ -1941,7 +1953,7 @@ export default function TransitMapView({
         addingStationAfter={addingStationAfter}
         onAddStationBetween={onAddStationBetween}
       />
-      {mapLayersReady ? (
+      {showTransitLayer ? (
       <TransitLayer
         stations={stations}
         lines={lines}

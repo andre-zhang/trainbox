@@ -1,12 +1,17 @@
 import type { LatLng } from './types'
 
-/** In dev, Vite proxies to avoid browser CORS / odd fetch behaviour against nominatim.openstreetmap.org */
-const NOMINATIM = import.meta.env.DEV ? '/nominatim' : 'https://nominatim.openstreetmap.org'
+/** In dev, Vite proxies `/nominatim`. In production, `/api/nominatim/*` server routes set User-Agent. */
+const NOMINATIM = import.meta.env.DEV ? '/nominatim' : '/api/nominatim'
 
-/** Nominatim requires a valid User-Agent identifying the application */
+/** Nominatim requires a valid User-Agent identifying the application (set server-side in production). */
 const NOMINATIM_HEADERS: HeadersInit = {
   Accept: 'application/json',
-  'User-Agent': 'TrainboxTransitEditor/1.0 (local tool; https://www.openstreetmap.org/copyright)',
+  ...(import.meta.env.DEV
+    ? {
+        'User-Agent':
+          'TrainboxTransitEditor/1.0 (local tool; https://www.openstreetmap.org/copyright)',
+      }
+    : {}),
 }
 
 /** Public Nominatim: max ~1 reverse request per second. Pace from last request *start*, not a fixed pre-delay. */
@@ -26,10 +31,17 @@ export type NominatimPlace = {
 const STREET_SUFFIX_RE =
   /\s+(Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Way|Court|Ct\.?|Place|Pl\.?|Crescent|Cres\.?|Circle|Cir\.?|Terrace|Ter\.?|Trail|Trl\.?|Highway|Hwy\.?|Parkway|Pkwy\.?|Square|Sq\.?|Gate|Route|Rte\.?|Close|Crescent)$/i
 
+/** Trailing compass suffixes — "Steeles Avenue East" → "Steeles". */
+const DIRECTIONAL_SUFFIX_RE =
+  /\s+(East|West|North|South|Northeast|Northwest|Southeast|Southwest|E\.?|W\.?|N\.?|S\.?|NE|NW|SE|SW)$/i
+
 function stripStreetSuffix(name: string): string {
   let s = name.replace(/\s+/g, ' ').trim()
   while (STREET_SUFFIX_RE.test(s)) {
     s = s.replace(STREET_SUFFIX_RE, '').trim()
+  }
+  while (DIRECTIONAL_SUFFIX_RE.test(s)) {
+    s = s.replace(DIRECTIONAL_SUFFIX_RE, '').trim()
   }
   return s
 }

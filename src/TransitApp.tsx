@@ -331,7 +331,7 @@ export default function TransitApp({
     () => (stations.length > 0 ? stations[0].position : DEFAULT_CENTER),
     [stations],
   )
-  const mapMountKey = stations.length > 0 ? stations[0].id : 'empty-map'
+  const mapMountKey = cloudMapId ?? 'local-map'
   const [zoom] = useState(DEFAULT_ZOOM)
   const [editingStationId, setEditingStationId] = useState<string | null>(null)
   const [focusLocation, setFocusLocation] = useState<FocusTarget | null>(null)
@@ -507,7 +507,10 @@ export default function TransitApp({
         if (gap > 0) await new Promise((r) => setTimeout(r, gap))
         nominatimReverseLastStartRef.current = Date.now()
         const usedNames = new Set(
-          stationsRef.current.map((s) => (s.name || '').trim().toLowerCase()).filter(Boolean),
+          stationsRef.current
+            .filter((s) => s.id !== stationId && !isPlaceholderStopName(s.name))
+            .map((s) => (s.name || '').trim().toLowerCase())
+            .filter(Boolean),
         )
         const name = await reverseGeocodeStationName(position, usedNames)
         setStations((prev) => {
