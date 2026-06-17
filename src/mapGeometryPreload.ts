@@ -19,6 +19,24 @@ export function mapGeometryCacheKey(stations: Station[], lines: Line[]): string 
 }
 
 /**
+ * Bezier sample density per segment. Precomputed once — pan/zoom does not re-run this,
+ * so we can afford full quality unless the map is enormous.
+ */
+function curveStepsForLine(
+  pointCount: number,
+  mapStationCount: number,
+  hasWaypoints: boolean,
+  isRail: boolean,
+): number {
+  if (hasWaypoints) return 12
+  if (isRail) return 12
+  let steps = pointCount > 140 ? 10 : pointCount > 70 ? 11 : 12
+  if (mapStationCount > 1800) steps = Math.min(steps, 10)
+  if (mapStationCount > 2800) steps = Math.min(steps, 9)
+  return steps
+}
+
+/**
  * Precompute smoothed polylines once per map geometry (not per pan/zoom).
  * Used on initial open so panning does not re-run curve sampling.
  */
@@ -26,6 +44,7 @@ export function buildSmoothedLinePositions(
   lines: Line[],
   stationsById: Map<string, Station>,
 ): LatLng[][] {
+  const mapStationCount = stationsById.size
   return lines.map((line) => {
     const positions: LatLng[] = []
     for (let i = 0; i < line.stationIds.length; i++) {
@@ -41,11 +60,8 @@ export function buildSmoothedLinePositions(
     if (n < 2) return positions
     const mode = getLineMode(line)
     const isRail = mode === 'regional_rail' || mode === 'national_rail'
-    if (!isRail && stationsById.size > 1600 && n > 24) return positions
-    let steps = n > 140 ? 7 : n > 70 ? 9 : 12
-    if (stationsById.size > 500) steps = Math.min(steps, 6)
-    if (stationsById.size > 1000) steps = Math.min(steps, 5)
     const hasWaypoints = (line.waypoints?.length ?? 0) > 0
+    const steps = curveStepsForLine(n, mapStationCount, hasWaypoints, isRail)
     if (hasWaypoints) {
       return piecewiseQuadraticPathForLine(line, stationsById, steps)
     }

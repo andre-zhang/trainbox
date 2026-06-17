@@ -1,4 +1,5 @@
 import type { LatLng } from './types'
+import { enqueueNominatimRequest } from './nominatimQueue'
 
 /** In dev, Vite proxies `/nominatim`. In production, `/api/nominatim/*` server routes set User-Agent. */
 const NOMINATIM = import.meta.env.DEV ? '/nominatim' : '/api/nominatim'
@@ -14,8 +15,7 @@ const NOMINATIM_HEADERS: HeadersInit = {
     : {}),
 }
 
-/** Public Nominatim: max ~1 reverse request per second. Pace from last request *start*, not a fixed pre-delay. */
-export const NOMINATIM_REVERSE_MIN_INTERVAL_MS = 1000
+export { NOMINATIM_REVERSE_MIN_INTERVAL_MS } from './nominatimQueue'
 
 export type NominatimPlace = {
   displayName: string
@@ -105,13 +105,13 @@ const SIDE_STREET_OFFSETS: { lat: number; lng: number }[] = [
   { lat: -0.00018, lng: 0 },
   { lat: 0, lng: 0.00018 },
   { lat: 0, lng: -0.00018 },
-  { lat: 0.00013, lng: 0.00013 },
-  { lat: -0.00013, lng: -0.00013 },
 ]
+
+const REVERSE_FETCH_MAX_ATTEMPTS = 4
 
 type ReverseAddressInfo = { community: string; streets: string[] }
 
-async function fetchReverseAddress(
+async function fetchReverseAddressOnce(
   position: LatLng,
   signal?: AbortSignal,
 ): Promise<ReverseAddressInfo | null> {
@@ -121,8 +121,17 @@ async function fetchReverseAddress(
     format: 'json',
     addressdetails: '1',
   })}`
-  const res = await fetch(url, { signal, headers: NOMINATIM_HEADERS })
-  if (!res.ok) return null
+  let res: Response | null = null
+  for (let attempt = 0; attempt < REVERSE_FETCH_MAX_ATTEMPTS; attempt++) {
+    if (signal?.aborted) return null
+    res = await fetch(url, { signal, headers: NOMINATIM_HEADERS })
+    if (res.status === 429 || res.status === 503) {
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+      continue
+    }
+    break
+  }
+  if (!res?.ok) return null
   const d = (await res.json()) as { error?: string; address?: Record<string, string> }
   if (d.error) return null
   const address = d.address ?? {}
@@ -130,6 +139,10 @@ async function fetchReverseAddress(
     community: communityFromAddress(address),
     streets: streetPartsFromAddress(address),
   }
+}
+
+function fetchReverseAddress(position: LatLng, signal?: AbortSignal): Promise<ReverseAddressInfo | null> {
+  return enqueueNominatimRequest(() => fetchReverseAddressOnce(position, signal))
 }
 
 /** Search places; returns up to `limit` results with bounding boxes. */

@@ -30,7 +30,6 @@ import {
 import {
   searchNominatimPlaces,
   reverseGeocodeStationName,
-  NOMINATIM_REVERSE_MIN_INTERVAL_MS,
   type NominatimPlace,
 } from './transitGeocode'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
@@ -437,8 +436,8 @@ export default function TransitApp({
   const draftCheckedRef = useRef(false)
   const futureRef = useRef<HistorySnapshot[]>([])
   const enrichNamingAbortRef = useRef<AbortController | null>(null)
-  /** Shared with import enrichment — Nominatim allows ~1 reverse req/s. */
-  const nominatimReverseLastStartRef = useRef(0)
+  /** Names assigned by in-flight reverse geocode (before React state catches up). */
+  const pendingGeocodedNamesRef = useRef<Set<string>>(new Set())
 
   const pushHistory = useCallback((s: Station[], l: Line[], o: Record<string, StationLabelOverride>) => {
     const max = s.length > LARGE_MAP_STATION_THRESHOLD ? UNDO_HISTORY_MAX_LARGE_MAP : UNDO_HISTORY_MAX
@@ -496,34 +495,40 @@ export default function TransitApp({
     setAppNotice({ kind, text })
   }, [])
 
-  const queueReverseNameForStation = useCallback((stationId: string, position: LatLng) => {
-    if (!autoStationNames) return
-    const run = async () => {
-      try {
-        const gap = Math.max(
-          0,
-          NOMINATIM_REVERSE_MIN_INTERVAL_MS - (Date.now() - nominatimReverseLastStartRef.current),
-        )
-        if (gap > 0) await new Promise((r) => setTimeout(r, gap))
-        nominatimReverseLastStartRef.current = Date.now()
-        const usedNames = new Set(
-          stationsRef.current
-            .filter((s) => s.id !== stationId && !isPlaceholderStopName(s.name))
-            .map((s) => (s.name || '').trim().toLowerCase())
-            .filter(Boolean),
-        )
-        const name = await reverseGeocodeStationName(position, usedNames)
-        setStations((prev) => {
-          const st = prev.find((s) => s.id === stationId)
-          if (!st || !isPlaceholderStopName(st.name)) return prev
-          return prev.map((s) => (s.id === stationId ? { ...s, name } : s))
-        })
-      } catch {
-        /* network / parse errors — leave placeholder */
-      }
+  const collectUsedStationNames = useCallback((excludeStationId?: string) => {
+    const used = new Set(pendingGeocodedNamesRef.current)
+    for (const s of stationsRef.current) {
+      if (excludeStationId && s.id === excludeStationId) continue
+      if (isPlaceholderStopName(s.name)) continue
+      const n = (s.name || '').trim().toLowerCase()
+      if (n) used.add(n)
     }
-    void run()
-  }, [autoStationNames])
+    return used
+  }, [])
+
+  const queueReverseNameForStation = useCallback(
+    (stationId: string, position: LatLng) => {
+      if (!autoStationNames) return
+      const run = async () => {
+        try {
+          const usedNames = collectUsedStationNames(stationId)
+          const name = await reverseGeocodeStationName(position, usedNames)
+          if (!isPlaceholderStopName(name)) {
+            pendingGeocodedNamesRef.current.add(name.toLowerCase())
+          }
+          setStations((prev) => {
+            const st = prev.find((s) => s.id === stationId)
+            if (!st || !isPlaceholderStopName(st.name)) return prev
+            return prev.map((s) => (s.id === stationId ? { ...s, name } : s))
+          })
+        } catch {
+          /* network / parse errors — leave placeholder */
+        }
+      }
+      void run()
+    },
+    [autoStationNames, collectUsedStationNames],
+  )
 
   const addStation = useCallback(
     (position: LatLng) => {
@@ -1869,10 +1874,10 @@ export default function TransitApp({
       enrichNamingAbortRef.current?.abort()
       const ac = new AbortController()
       enrichNamingAbortRef.current = ac
-      const used = new Set<string>()
+      pendingGeocodedNamesRef.current = new Set()
       for (const s of stationList) {
         if (!isPlaceholderStopName(s.name)) {
-          used.add((s.name || '').trim().toLowerCase())
+          pendingGeocodedNamesRef.current.add((s.name || '').trim().toLowerCase())
         }
       }
       const idToName = new Map<string, string>()
@@ -1890,18 +1895,15 @@ export default function TransitApp({
         }
         const s = toFix[i]
         try {
-          const gap = Math.max(
-            0,
-            NOMINATIM_REVERSE_MIN_INTERVAL_MS - (Date.now() - nominatimReverseLastStartRef.current),
-          )
-          if (gap > 0) await new Promise((r) => setTimeout(r, gap))
           if (ac.signal.aborted) {
             applyBatch()
             return
           }
-          nominatimReverseLastStartRef.current = Date.now()
+          const used = collectUsedStationNames(s.id)
           const name = await reverseGeocodeStationName(s.position, used, ac.signal)
-          used.add(name.toLowerCase())
+          if (!isPlaceholderStopName(name)) {
+            pendingGeocodedNamesRef.current.add(name.toLowerCase())
+          }
           idToName.set(s.id, name)
           if ((i + 1) % BATCH_FLUSH === 0 || i === toFix.length - 1) applyBatch()
         } catch {
@@ -1909,7 +1911,7 @@ export default function TransitApp({
         }
       }
     },
-    [autoStationNames],
+    [autoStationNames, collectUsedStationNames],
   )
 
   const runSearchPlaces = useCallback(async () => {
