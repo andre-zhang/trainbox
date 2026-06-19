@@ -509,18 +509,25 @@ export default function TransitApp({
   const queueReverseNameForStation = useCallback(
     (stationId: string, position: LatLng) => {
       if (!autoStationNames) return
+      const applyName = (name: string) => {
+        if (!isPlaceholderStopName(name)) {
+          pendingGeocodedNamesRef.current.add(name.toLowerCase())
+        }
+        setStations((prev) => {
+          const st = prev.find((s) => s.id === stationId)
+          if (!st || !isPlaceholderStopName(st.name)) return prev
+          return prev.map((s) => (s.id === stationId ? { ...s, name } : s))
+        })
+      }
       const run = async () => {
         try {
           const usedNames = collectUsedStationNames(stationId)
-          const name = await reverseGeocodeStationName(position, usedNames)
-          if (!isPlaceholderStopName(name)) {
-            pendingGeocodedNamesRef.current.add(name.toLowerCase())
+          let name = await reverseGeocodeStationName(position, usedNames)
+          if (isPlaceholderStopName(name)) {
+            await new Promise((r) => setTimeout(r, 2500))
+            name = await reverseGeocodeStationName(position, collectUsedStationNames(stationId))
           }
-          setStations((prev) => {
-            const st = prev.find((s) => s.id === stationId)
-            if (!st || !isPlaceholderStopName(st.name)) return prev
-            return prev.map((s) => (s.id === stationId ? { ...s, name } : s))
-          })
+          applyName(name)
         } catch {
           /* network / parse errors — leave placeholder */
         }

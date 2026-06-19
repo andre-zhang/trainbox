@@ -1,5 +1,6 @@
 import type { LatLng } from './types'
 import { enqueueNominatimRequest } from './nominatimQueue'
+import { UNNAMED_STOP_PLACEHOLDER } from './transitOsmImport'
 
 /** In dev, Vite proxies `/nominatim`. In production, `/api/nominatim/*` server routes set User-Agent. */
 const NOMINATIM = import.meta.env.DEV ? '/nominatim' : '/api/nominatim'
@@ -47,7 +48,18 @@ function stripStreetSuffix(name: string): string {
 }
 
 function communityFromAddress(address: Record<string, string>): string {
-  return (address.neighbourhood || address.suburb || address.quarter || address.city_district || '')
+  return (
+    address.neighbourhood ||
+    address.suburb ||
+    address.quarter ||
+    address.city_district ||
+    address.hamlet ||
+    address.village ||
+    address.town ||
+    address.city ||
+    address.municipality ||
+    ''
+  )
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -63,6 +75,8 @@ function streetPartsFromAddress(address: Record<string, string>): string[] {
     address.footway,
     address.path,
     address.cycleway,
+    address.construction,
+    address.service,
   ].filter(Boolean) as string[]
   const out: string[] = []
   for (const part of raw) {
@@ -88,13 +102,14 @@ function buildStationNameCandidates(community: string, streets: string[]): strin
   if (streets.length >= 2) candidates.push(`${streets[0]} / ${streets[1]}`)
   if (community && streets.length >= 1) candidates.push(`${community} / ${streets[0]}`)
   if (community && streets.length === 0) candidates.push(community)
-  candidates.push('Unnamed stop')
   return [...new Set(candidates)]
 }
 
 function firstUnusedStationName(candidates: string[], usedNames: Set<string>): string | null {
   for (const base of candidates) {
-    if (!usedNames.has(base.toLowerCase())) return base
+    const key = base.trim().toLowerCase()
+    if (!key || key === UNNAMED_STOP_PLACEHOLDER.toLowerCase()) continue
+    if (!usedNames.has(key)) return base
   }
   return null
 }
@@ -105,14 +120,45 @@ const SIDE_STREET_OFFSETS: { lat: number; lng: number }[] = [
   { lat: -0.00018, lng: 0 },
   { lat: 0, lng: 0.00018 },
   { lat: 0, lng: -0.00018 },
+  { lat: 0.00013, lng: 0.00013 },
+  { lat: -0.00013, lng: -0.00013 },
 ]
 
 const REVERSE_FETCH_MAX_ATTEMPTS = 4
+const UNNAMED = UNNAMED_STOP_PLACEHOLDER
 
 type ReverseAddressInfo = { community: string; streets: string[] }
 
-async function fetchReverseAddressOnce(
+function parseReversePayload(d: {
+  error?: string
+  address?: Record<string, string>
+  name?: string
+  display_name?: string
+}): ReverseAddressInfo | null {
+  if (d.error) return null
+  const address = d.address ?? {}
+  const streets = streetPartsFromAddress(address)
+  if (d.name) {
+    const fromName = stripStreetSuffix(d.name.trim())
+    if (fromName && !streets.some((s) => s.toLowerCase() === fromName.toLowerCase())) {
+      streets.unshift(fromName)
+    }
+  }
+  if (streets.length === 0 && d.display_name) {
+    const first = d.display_name.split(',')[0]?.trim()
+    if (first) {
+      const fromDisplay = stripStreetSuffix(first)
+      if (fromDisplay) streets.push(fromDisplay)
+    }
+  }
+  const community = communityFromAddress(address)
+  if (streets.length === 0 && !community) return null
+  return { community, streets }
+}
+
+async function fetchReverseAddressAtZoom(
   position: LatLng,
+  zoom: number,
   signal?: AbortSignal,
 ): Promise<ReverseAddressInfo | null> {
   const url = `${NOMINATIM}/reverse?${new URLSearchParams({
@@ -120,6 +166,7 @@ async function fetchReverseAddressOnce(
     lon: String(position.lng),
     format: 'json',
     addressdetails: '1',
+    zoom: String(zoom),
   })}`
   let res: Response | null = null
   for (let attempt = 0; attempt < REVERSE_FETCH_MAX_ATTEMPTS; attempt++) {
@@ -132,17 +179,28 @@ async function fetchReverseAddressOnce(
     break
   }
   if (!res?.ok) return null
-  const d = (await res.json()) as { error?: string; address?: Record<string, string> }
-  if (d.error) return null
-  const address = d.address ?? {}
-  return {
-    community: communityFromAddress(address),
-    streets: streetPartsFromAddress(address),
+  const d = (await res.json()) as {
+    error?: string
+    address?: Record<string, string>
+    name?: string
+    display_name?: string
   }
+  return parseReversePayload(d)
+}
+
+async function fetchReverseAddressOnce(
+  position: LatLng,
+  signal?: AbortSignal,
+): Promise<ReverseAddressInfo | null> {
+  for (const zoom of [18, 17, 16] as const) {
+    const info = await enqueueNominatimRequest(() => fetchReverseAddressAtZoom(position, zoom, signal))
+    if (info && (info.streets.length > 0 || info.community)) return info
+  }
+  return enqueueNominatimRequest(() => fetchReverseAddressAtZoom(position, 18, signal))
 }
 
 function fetchReverseAddress(position: LatLng, signal?: AbortSignal): Promise<ReverseAddressInfo | null> {
-  return enqueueNominatimRequest(() => fetchReverseAddressOnce(position, signal))
+  return fetchReverseAddressOnce(position, signal)
 }
 
 /** Search places; returns up to `limit` results with bounding boxes. */
@@ -202,7 +260,7 @@ export async function reverseGeocodeStationName(
   signal?: AbortSignal,
 ): Promise<string> {
   const primary = await fetchReverseAddress(position, signal)
-  if (!primary) return 'Unnamed stop'
+  if (!primary) return UNNAMED
 
   const primaryName = firstUnusedStationName(
     buildStationNameCandidates(primary.community, primary.streets),
@@ -229,5 +287,5 @@ export async function reverseGeocodeStationName(
     }
   }
 
-  return firstUnusedStationName(['Unnamed stop'], usedNames) ?? 'Unnamed stop'
+  return UNNAMED
 }
