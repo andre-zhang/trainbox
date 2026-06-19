@@ -254,6 +254,27 @@ export async function searchNominatimPlaces(
  * street / street, then community / street. When every candidate is taken, probes nearby
  * points for an alternate cross street — never appends " (2)" style suffixes.
  */
+export async function reverseGeocodeStationNameFromHints(
+  primary: LatLng,
+  usedNames: Set<string>,
+  hints: LatLng[] = [],
+  signal?: AbortSignal,
+): Promise<string> {
+  const seen = new Set<string>()
+  const positions: LatLng[] = []
+  for (const pos of [primary, ...hints]) {
+    const key = `${pos.lat.toFixed(5)},${pos.lng.toFixed(5)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    positions.push(pos)
+  }
+  for (const pos of positions) {
+    const name = await reverseGeocodeStationName(pos, usedNames, signal)
+    if (name !== UNNAMED) return name
+  }
+  return UNNAMED
+}
+
 export async function reverseGeocodeStationName(
   position: LatLng,
   usedNames: Set<string>,

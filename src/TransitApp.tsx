@@ -30,6 +30,7 @@ import {
 import {
   searchNominatimPlaces,
   reverseGeocodeStationName,
+  reverseGeocodeStationNameFromHints,
   type NominatimPlace,
 } from './transitGeocode'
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
@@ -507,7 +508,7 @@ export default function TransitApp({
   }, [])
 
   const queueReverseNameForStation = useCallback(
-    (stationId: string, position: LatLng) => {
+    (stationId: string, position: LatLng, nameHints: LatLng[] = []) => {
       if (!autoStationNames) return
       const applyName = (name: string) => {
         if (!isPlaceholderStopName(name)) {
@@ -522,10 +523,14 @@ export default function TransitApp({
       const run = async () => {
         try {
           const usedNames = collectUsedStationNames(stationId)
-          let name = await reverseGeocodeStationName(position, usedNames)
+          let name = await reverseGeocodeStationNameFromHints(position, usedNames, nameHints)
           if (isPlaceholderStopName(name)) {
             await new Promise((r) => setTimeout(r, 2500))
-            name = await reverseGeocodeStationName(position, collectUsedStationNames(stationId))
+            name = await reverseGeocodeStationNameFromHints(
+              position,
+              collectUsedStationNames(stationId),
+              nameHints,
+            )
           }
           applyName(name)
         } catch {
@@ -1054,7 +1059,14 @@ export default function TransitApp({
       }
       pushHistory(stations, lines, stationLabelOverrides)
       setStations((prev) => [...prev, newStation])
-      if (autoStationNames) queueReverseNameForStation(newId, insertPosition)
+      if (autoStationNames) {
+        // Infill is placed on the chord midpoint; geocode from the click on the line first.
+        queueReverseNameForStation(
+          newId,
+          position,
+          addInfillAtMidpoint ? [insertPosition] : [],
+        )
+      }
       setLines((prev) =>
         prev.map((l, idx) => {
           if (idx !== targetIndex) return l
