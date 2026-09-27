@@ -23,7 +23,7 @@ I've loved drawing transit maps since I was a kid, and never really stopped want
 
 - React 18, TypeScript, Vite
 - React Router: `/`, `/m/:mapId`, `/local`
-- Leaflet + react-leaflet, CartoDB raster tiles (default and simplified variant); requires `VITE_CARTO_API_KEY` (see `.env.example`)
+- Leaflet + react-leaflet, CartoDB raster tiles (default and simplified variant); requires `CARTO_API_KEY`, served to the browser via `/api/carto-key` (see `.env.example`)
 - Curve and intersection math in `src/utils/curve.ts` (Catmull style smoothing, quadratic legs when waypoints exist, closest point on polyline for handle placement)
 - Overpass + Nominatim from the browser; import and merge in `src/transitOsmImport.ts` (chunked conflict detection, normalisation including noisy names and `gtfs:*` tags on OSM nodes where present; no separate GTFS file ingest)
 - Cloud map CRUD: Vercel serverless `api/`, Neon Postgres via `@neondatabase/serverless`

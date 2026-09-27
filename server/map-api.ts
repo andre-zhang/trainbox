@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
 import { mapApiHandler } from '../api/lib/mapApiHandler.js'
+import cartoKeyRoute from '../api/carto-key.js'
 
 const PORT = Number(process.env.MAP_API_PORT || process.env.PORT || 8787)
 
@@ -16,6 +17,13 @@ function readBody(req: import('node:http').IncomingMessage): Promise<string> {
 createServer(async (req, res) => {
   const host = req.headers.host || 'localhost'
   const url = new URL(req.url || '/', `http://${host}`)
+  if (url.pathname === '/api/carto-key') {
+    const out = await cartoKeyRoute.fetch()
+    res.statusCode = out.status
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(await out.text())
+    return
+  }
   if (!url.pathname.startsWith('/api/map')) {
     res.statusCode = 404
     res.setHeader('Content-Type', 'text/plain')

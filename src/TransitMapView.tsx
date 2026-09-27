@@ -33,10 +33,41 @@ import {
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 import { buildSmoothedLinePositions, mapGeometryCacheKey } from './mapGeometryPreload'
 
-const CARTO_API_KEY = import.meta.env.VITE_CARTO_API_KEY as string | undefined
-const CARTO_KEY_SUFFIX = CARTO_API_KEY ? `?key=${encodeURIComponent(CARTO_API_KEY)}` : ''
-const CARTODB_TILES = `https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png${CARTO_KEY_SUFFIX}`
-const CARTODB_SIMPLIFIED_TILES = `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${CARTO_KEY_SUFFIX}`
+const BUILD_CARTO_KEY = ((import.meta.env.VITE_CARTO_API_KEY as string | undefined) ?? '').trim()
+let cartoKeyRequest: Promise<string> | null = null
+
+function loadCartoKey(): Promise<string> {
+  cartoKeyRequest ??= fetch('/api/carto-key')
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data: unknown) => {
+      const key = (data as { key?: unknown } | null)?.key
+      return typeof key === 'string' ? key : ''
+    })
+    .catch(() => '')
+  return cartoKeyRequest
+}
+
+/** null until resolved, so no keyless (watermarked) tiles get requested first. */
+function useCartoKey(): string | null {
+  const [key, setKey] = useState<string | null>(BUILD_CARTO_KEY || null)
+  useEffect(() => {
+    if (key !== null) return
+    let live = true
+    void loadCartoKey().then((k) => {
+      if (live) setKey(k)
+    })
+    return () => {
+      live = false
+    }
+  }, [key])
+  return key
+}
+
+function cartoTileUrl(style: 'light_nolabels' | 'light_all', key: string): string {
+  const suffix = key ? `?key=${encodeURIComponent(key)}` : ''
+  return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png${suffix}`
+}
+
 const ATTRIBUTION =
   '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>'
 
@@ -1930,6 +1961,8 @@ export default function TransitMapView({
     }
   }, [geometryKey, stations, lines])
 
+  const cartoKey = useCartoKey()
+
   const showWarmupOverlay = !mapLayersReady && !mapEverReadyRef.current && isHeavyMap
   const showTransitLayer = mapLayersReady || mapEverReadyRef.current
 
@@ -1937,10 +1970,12 @@ export default function TransitMapView({
     <div className="transitMapRoot">
     <MapContainer center={initialCenter} zoom={initialZoom} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
       <ScaleControl position="bottomleft" metric imperial />
-      <TileLayer
-        url={simplifiedBasemap ? CARTODB_SIMPLIFIED_TILES : CARTODB_TILES}
-        attribution={ATTRIBUTION}
-      />
+      {cartoKey !== null && (
+        <TileLayer
+          url={cartoTileUrl(simplifiedBasemap ? 'light_all' : 'light_nolabels', cartoKey)}
+          attribution={ATTRIBUTION}
+        />
+      )}
       <FlyToController
         focusTarget={focusTarget}
         onFocusComplete={onFocusComplete}
