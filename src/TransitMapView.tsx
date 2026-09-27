@@ -33,8 +33,10 @@ import {
 import { demoTourCaptionTopPx, padClientRectForDemo } from './demoTourLayout'
 import { buildSmoothedLinePositions, mapGeometryCacheKey } from './mapGeometryPreload'
 
-const CARTODB_TILES = 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'
-const CARTODB_SIMPLIFIED_TILES = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'
+const CARTO_API_KEY = import.meta.env.VITE_CARTO_API_KEY as string | undefined
+const CARTO_KEY_SUFFIX = CARTO_API_KEY ? `?key=${encodeURIComponent(CARTO_API_KEY)}` : ''
+const CARTODB_TILES = `https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png${CARTO_KEY_SUFFIX}`
+const CARTODB_SIMPLIFIED_TILES = `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png${CARTO_KEY_SUFFIX}`
 const ATTRIBUTION =
   '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>'
 
